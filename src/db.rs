@@ -7,6 +7,22 @@ pub struct DbManager {
     conn: Arc<Mutex<Connection>>,
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct AdminStats {
+    pub total_users: i64,
+    pub total_queued_offline_messages: i64,
+    pub total_registered_devices: i64,
+    pub total_announcements: i64,
+    pub database_size_bytes: u64,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct Announcement {
+    pub id: i64,
+    pub message: String,
+    pub created_at: i64,
+}
+
 impl DbManager {
     pub fn new(db_path: &str) -> Result<Self> {
         let conn = Connection::open(db_path)?;
@@ -17,7 +33,7 @@ impl DbManager {
              PRAGMA foreign_keys = ON;",
         )?;
 
-        // Initialize Complete V1 + V2 Unified Schema
+        // Initialize Schema
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS users (
                 username TEXT PRIMARY KEY,
@@ -151,6 +167,90 @@ impl DbManager {
     pub fn delete_user(&self, username: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM users WHERE username = ?1", params![username])?;
+        Ok(())
+    }
+
+    // --- Admin Operations ---
+    pub fn get_admin_stats(&self) -> Result<AdminStats> {
+        let conn = self.conn.lock().unwrap();
+        let total_users: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0)).unwrap_or(0);
+        let total_queued_offline_messages: i64 = conn.query_row("SELECT COUNT(*) FROM offline_messages", [], |r| r.get(0)).unwrap_or(0);
+        let total_registered_devices: i64 = conn.query_row("SELECT COUNT(*) FROM user_devices", [], |r| r.get(0)).unwrap_or(0);
+        let total_announcements: i64 = conn.query_row("SELECT COUNT(*) FROM announcements", [], |r| r.get(0)).unwrap_or(0);
+
+        Ok(AdminStats {
+            total_users,
+            total_queued_offline_messages,
+            total_registered_devices,
+            total_announcements,
+            database_size_bytes: 0,
+        })
+    }
+
+    pub fn list_all_users(&self) -> Result<Vec<VextaUser>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT username, ed25519_pubkey, created_at, is_provisioned, passcode, registration_lock_hash, encrypted_vault, pre_key, pre_key_signature, auth_attempts, locked_until FROM users ORDER BY created_at DESC",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            let is_prov: i32 = row.get(3)?;
+            Ok(VextaUser {
+                username: row.get(0)?,
+                ed25519_pubkey: row.get(1)?,
+                created_at: row.get(2)?,
+                is_provisioned: is_prov == 1,
+                passcode: row.get(4)?,
+                registration_lock_hash: row.get(5)?,
+                encrypted_vault: row.get(6)?,
+                pre_key: row.get(7)?,
+                pre_key_signature: row.get(8)?,
+                auth_attempts: row.get(9)?,
+                locked_until: row.get(10)?,
+            })
+        })?;
+
+        let mut users = Vec::new();
+        for r in rows {
+            users.push(r?);
+        }
+        Ok(users)
+    }
+
+    pub fn create_announcement(&self, message: &str) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO announcements (message, created_at) VALUES (?1, ?2)",
+            params![message, now],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn list_announcements(&self) -> Result<Vec<Announcement>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, message, created_at FROM announcements ORDER BY created_at DESC",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok(Announcement {
+                id: row.get(0)?,
+                message: row.get(1)?,
+                created_at: row.get(2)?,
+            })
+        })?;
+
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    }
+
+    pub fn delete_announcement(&self, id: i64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM announcements WHERE id = ?1", params![id])?;
         Ok(())
     }
 

@@ -1,0 +1,22 @@
+FROM alpine:latest
+
+RUN apk add --no-cache ca-certificates tzdata
+
+WORKDIR /app
+
+# Copy pre-compiled binary
+COPY target/release/vexta-bridge-v2 /app/vexta-bridge-v2
+
+# Persistent volume for SQLite WAL database
+VOLUME ["/app/data"]
+
+ENV RUST_LOG=info \
+    DATABASE_PATH=/app/data/vexta_bridge_v2.db
+
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:8000/api/announcements/ || exit 1
+
+ENTRYPOINT ["/app/vexta-bridge-v2"]

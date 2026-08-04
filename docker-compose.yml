@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   vexta-bridge-v2:
     build:
@@ -10,16 +8,37 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - RUST_LOG=info
+      - RUST_LOG=${RUST_LOG:-info}
       - DATABASE_PATH=/app/data/vexta_bridge_v2.db
     volumes:
       - vexta_bridge_data:/app/data
+      - ./downloads:/app/downloads
+    networks:
+      - vexta-v2-net
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8000/api/announcements/"]
       interval: 30s
       timeout: 5s
       retries: 3
 
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: vexta-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:-""}
+    networks:
+      - vexta-v2-net
+    depends_on:
+      vexta-bridge-v2:
+        condition: service_healthy
+
 volumes:
   vexta_bridge_data:
     driver: local
+
+networks:
+  vexta-v2-net:
+    name: vexta-v2-net
+    driver: bridge

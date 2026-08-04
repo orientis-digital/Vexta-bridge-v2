@@ -43,4 +43,8 @@ impl AppState {
             false
         }
     }
+
+    pub fn active_sessions_count(&self) -> usize {
+        self.active_sessions.len()
+    }
 }
