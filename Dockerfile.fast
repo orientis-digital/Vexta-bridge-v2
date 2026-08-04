@@ -16,7 +16,7 @@ ENV RUST_LOG=info \
 EXPOSE 8000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD wget -q -O /dev/null http://localhost:8000/api/announcements/ || exit 1
+HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
+  CMD wget -q -O /dev/null http://127.0.0.1:8000/api/announcements/ || exit 1
 
 ENTRYPOINT ["/app/vexta-bridge-v2"]
