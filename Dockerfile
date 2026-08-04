@@ -1,13 +1,13 @@
 # ------------------------------------------------------------------------------
 # Stage 1: Build static binary with Rust & Musl
 # ------------------------------------------------------------------------------
-FROM rust:1.94-alpine as builder
+FROM rust:1.94-alpine AS builder
 
-RUN apk add --no-crate-install --no-cache musl-dev gcc pkgconfig
+RUN apk add --no-cache musl-dev gcc pkgconfig
 
 WORKDIR /app
 
-# Copy dependency definitions
+# Copy Cargo definitions
 COPY Cargo.toml Cargo.lock ./
 
 # Copy source files
