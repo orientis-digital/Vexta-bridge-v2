@@ -42,6 +42,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         server_signature: server_sig,
     };
 
+    info!("[WS Bridge V2] New WebSocket connection established; issued AUTH_CHALLENGE nonce={}...", &nonce_hex[..8]);
+
     // Send initial challenge frame in standard JSON format
     let text_json = serde_json::to_string(&challenge_frame).unwrap();
     let _ = tx.send(Message::Text(text_json));
@@ -67,6 +69,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         device_name,
                         ..
                     } => {
+                        info!("[WS Bridge V2] REGISTER packet received for user '@{}' (device: {:?})", username, device_name);
                         let user = VextaUser {
                             username: username.clone(),
                             ed25519_pubkey: ed25519_pubkey.clone(),
@@ -90,7 +93,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         authenticated_username = Some(username.clone());
                         state.register_session(username.clone(), tx.clone());
 
-                        info!("[WS Bridge V2] User '{}' registered & authenticated cleanly", username);
+                        info!("[WS Bridge V2] User '@{}' registered & authenticated cleanly", username);
 
                         let resp = BridgeFrame::AuthSuccess {
                             username: username.clone(),
@@ -111,8 +114,10 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         device_name,
                         ..
                     } => {
+                        info!("[WS Bridge V2] AUTH_RESPONSE login attempt for user '@{}'", username);
                         if let Some(ref n) = nonce {
                             if n != &nonce_hex {
+                                info!("[WS Bridge V2] AUTH_FAILED for user '@{}': Invalid challenge nonce", username);
                                 let resp = BridgeFrame::AuthError {
                                     reason: "Invalid challenge nonce".into(),
                                 };
@@ -151,7 +156,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             authenticated_username = Some(username.clone());
                             state.register_session(username.clone(), tx.clone());
 
-                            info!("[WS Bridge V2] User '{}' authenticated cleanly", username);
+                            info!("[WS Bridge V2] User '@{}' authenticated cleanly", username);
 
                             let resp = BridgeFrame::AuthSuccess {
                                 username: username.clone(),
@@ -164,6 +169,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
                             // Deliver Offline Messages
                             if let Ok(offline_msgs) = state.db.fetch_and_clear_offline_messages(&username) {
+                                if !offline_msgs.is_empty() {
+                                    info!("[WS Bridge V2] Delivering {} offline messages to user '@{}'", offline_msgs.len(), username);
+                                }
                                 for o_msg in offline_msgs {
                                     let frame = BridgeFrame::BlindMessage {
                                         id: o_msg.id,
@@ -180,6 +188,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                 }
                             }
                         } else {
+                            info!("[WS Bridge V2] AUTH_FAILED for user '@{}': Signature verification failed", username);
                             let resp = BridgeFrame::AuthError {
                                 reason: "Signature verification failed".into(),
                             };
@@ -219,15 +228,16 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         let delivered = state.send_to_user(&recipient, Message::Binary(payload_bytes));
                         if !delivered {
                             let _ = state.db.enqueue_offline_message(&recipient, &sender, &ciphertext, now, is_grp);
-                            info!("[WS Bridge V2] Queued offline payload from {} -> {}", sender, recipient);
+                            info!("[WS Bridge V2] Queued offline message: @{} -> @{} (is_group={})", sender, recipient, is_grp);
                         } else {
-                            info!("[WS Bridge V2] Relayed MessagePack payload from {} -> {}", sender, recipient);
+                            info!("[WS Bridge V2] Relayed live message: @{} -> @{} (is_group={})", sender, recipient, is_grp);
                         }
                     }
 
                     BridgeFrame::SendFriendRequest { recipient } => {
                         if let Some(ref sender) = authenticated_username {
                             if let Ok(req_id) = state.db.create_friend_request(sender, &recipient) {
+                                info!("[WS Bridge V2] Friend request created: @{} -> @{} (id={})", sender, recipient, req_id);
                                 let resp = BridgeFrame::FriendRequestSent {
                                     request_id: req_id,
                                     recipient: recipient.clone(),
@@ -238,19 +248,22 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     }
 
                     BridgeFrame::AcceptFriendRequest { request_id } => {
-                        if let Some(ref _user) = authenticated_username {
+                        if let Some(ref user) = authenticated_username {
                             let _ = state.db.update_friend_request_status(request_id, "accepted");
+                            info!("[WS Bridge V2] Friend request #{} ACCEPTED by user '@{}'", request_id, user);
                         }
                     }
 
                     BridgeFrame::RejectFriendRequest { request_id } => {
-                        if let Some(ref _user) = authenticated_username {
+                        if let Some(ref user) = authenticated_username {
                             let _ = state.db.update_friend_request_status(request_id, "rejected");
+                            info!("[WS Bridge V2] Friend request #{} REJECTED by user '@{}'", request_id, user);
                         }
                     }
 
                     BridgeFrame::ListFriends => {
                         if let Some(ref username) = authenticated_username {
+                            info!("[WS Bridge V2] Listing friends for user '@{}'", username);
                             if let Ok(friends) = state.db.list_friends(username) {
                                 let resp = BridgeFrame::FriendsList { friends };
                                 let _ = tx.send(Message::Binary(rmp_serde::to_vec(&resp).unwrap()));
@@ -260,6 +273,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
                     BridgeFrame::ListFriendRequests => {
                         if let Some(ref username) = authenticated_username {
+                            info!("[WS Bridge V2] Listing pending friend requests for user '@{}'", username);
                             if let Ok(requests) = state.db.list_pending_requests(username) {
                                 let resp = BridgeFrame::FriendRequestsList { requests };
                                 let _ = tx.send(Message::Binary(rmp_serde::to_vec(&resp).unwrap()));
@@ -269,12 +283,14 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
                     BridgeFrame::RemoveFriend { friend_username } => {
                         if let Some(ref username) = authenticated_username {
+                            info!("[WS Bridge V2] User '@{}' removed friend '@{}'", username, friend_username);
                             let _ = state.db.remove_friend(username, &friend_username);
                         }
                     }
 
                     BridgeFrame::ListDevices => {
                         if let Some(ref username) = authenticated_username {
+                            info!("[WS Bridge V2] Listing devices for user '@{}'", username);
                             if let Ok(devices) = state.db.list_devices(username) {
                                 let resp = BridgeFrame::DevicesList { devices };
                                 let _ = tx.send(Message::Binary(rmp_serde::to_vec(&resp).unwrap()));
@@ -284,24 +300,28 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
                     BridgeFrame::RevokeDevice { hardware_hash } => {
                         if let Some(ref username) = authenticated_username {
+                            info!("[WS Bridge V2] User '@{}' revoked device hash: {}", username, hardware_hash);
                             let _ = state.db.revoke_device(username, &hardware_hash);
                         }
                     }
 
                     BridgeFrame::UpdateRecoveryLock { lock_hash } => {
                         if let Some(ref username) = authenticated_username {
+                            info!("[WS Bridge V2] User '@{}' updated recovery lock hash", username);
                             let _ = state.db.update_recovery_lock(username, &lock_hash);
                         }
                     }
 
                     BridgeFrame::UpdateVault { vault_data } => {
                         if let Some(ref username) = authenticated_username {
+                            info!("[WS Bridge V2] User '@{}' updated key vault data", username);
                             let _ = state.db.update_vault(username, &vault_data);
                         }
                     }
 
                     BridgeFrame::GetVault => {
                         if let Some(ref username) = authenticated_username {
+                            info!("[WS Bridge V2] User '@{}' requested key vault data", username);
                             if let Ok(Some(user)) = state.db.get_user(username) {
                                 let resp = BridgeFrame::VaultResponse {
                                     vault_data: user.encrypted_vault,
@@ -313,6 +333,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
                     BridgeFrame::DeleteAccount => {
                         if let Some(ref username) = authenticated_username {
+                            info!("[WS Bridge V2] ACCOUNT DELETED by user '@{}'", username);
                             let _ = state.db.delete_user(username);
                             let resp = BridgeFrame::DeleteAccountSuccess;
                             let _ = tx.send(Message::Binary(rmp_serde::to_vec(&resp).unwrap()));
@@ -328,6 +349,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
     if let Some(user) = authenticated_username {
         state.unregister_session(&user);
-        info!("[WS Bridge V2] Connection closed for user '{}'", user);
+        info!("[WS Bridge V2] Connection closed for user '@{}'", user);
+    } else {
+        info!("[WS Bridge V2] Unauthenticated WebSocket connection closed.");
     }
 }
