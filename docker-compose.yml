@@ -12,7 +12,6 @@ services:
       - DATABASE_PATH=/app/data/vexta_bridge_v2.db
     volumes:
       - vexta_bridge_data:/app/data
-      - ./downloads:/app/downloads
     networks:
       - vexta-v2-net
     healthcheck:

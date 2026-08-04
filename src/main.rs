@@ -18,7 +18,6 @@ use state::AppState;
 use std::net::SocketAddr;
 
 use tower_http::cors::{Any, CorsLayer};
-use tower_http::services::ServeDir;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -32,24 +31,20 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // 2. Ensure downloads directory exists
-    let downloads_dir = std::path::PathBuf::from("downloads");
-    std::fs::create_dir_all(&downloads_dir).ok();
-
-    // 3. Initialize Shared App State (SQLite DB + Ed25519 Server Crypto)
+    // 2. Initialize Shared App State (SQLite DB + Ed25519 Server Crypto)
     let db_path = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "vexta_bridge_v2.db".into());
     if let Some(parent) = std::path::Path::new(&db_path).parent() {
         std::fs::create_dir_all(parent).ok();
     }
     let state = AppState::new(&db_path);
 
-    // 4. Configure Full CORS Middleware (Cloudflare Tunnel Compatible)
+    // 3. Configure Full CORS Middleware (Cloudflare Tunnel Compatible)
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
 
-    // 5. Build Axum Router with Admin Console, Public APIs & Static Downloads Hosting
+    // 4. Build Axum Router with Admin Console & Public APIs
     let app = Router::new()
         // WebSocket Relay
         .route("/ws/chat/", get(ws::ws_handler))
@@ -57,10 +52,6 @@ async fn main() {
         // Public REST Endpoints
         .route("/api/check-account/:username", get(check_account_handler))
         .route("/api/announcements/", get(public_announcements_handler))
-        
-        // Static App Downloads Hosting (e.g. /downloads/vexta-v2_amd64.AppImage)
-        .nest_service("/downloads", ServeDir::new("downloads"))
-        .nest_service("/static/downloads", ServeDir::new("downloads"))
         
         // Private Embedded Admin UI
         .route("/admin/", get(admin_ui_handler))
@@ -75,9 +66,9 @@ async fn main() {
         .layer(cors)
         .with_state(state);
 
-    // 6. Start TCP Server on Port 8000
+    // 5. Start TCP Server on Port 8000
     let addr = SocketAddr::from(([0, 0, 0, 0], 8000));
-    info!("🚀 Vexta V2 Rust Bridge listening on http://{} (Downloads: http://127.0.0.1:8000/downloads/)", addr);
+    info!("🚀 Vexta V2 Rust Bridge listening on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
