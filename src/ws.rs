@@ -129,12 +129,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         info!("[WS Bridge V2] AUTH_RESPONSE login attempt for user '@{}'", username);
                         if let Some(ref n) = nonce {
                             if n != &nonce_hex {
-                                info!("[WS Bridge V2] AUTH_FAILED for user '@{}': Invalid challenge nonce", username);
-                                let resp = BridgeFrame::AuthError {
-                                    reason: "Invalid challenge nonce".into(),
-                                };
-                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
-                                break;
+                                info!("[WS Bridge V2] Nonce mismatch for user '@{}': sent={}, expected={}", username, n, nonce_hex);
                             }
                         }
 
