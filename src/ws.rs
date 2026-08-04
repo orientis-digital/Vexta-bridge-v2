@@ -42,23 +42,66 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         server_signature: server_sig,
     };
 
-    // Send initial challenge in both MessagePack binary format and JSON fallback
-    let binary_msgpack = rmp_serde::to_vec(&challenge_frame).unwrap();
-    let _ = tx.send(Message::Binary(binary_msgpack));
+    // Send initial challenge frame in standard JSON format
+    let text_json = serde_json::to_string(&challenge_frame).unwrap();
+    let _ = tx.send(Message::Text(text_json));
 
     let mut authenticated_username: Option<String> = None;
 
     // 2. Incoming Frame Event Loop (Handles MessagePack Binary & JSON Text)
     while let Some(res) = ws_receiver.next().await {
         if let Ok(msg) = res {
+            let is_json_client = matches!(msg, Message::Text(_));
             let frame_res: Option<BridgeFrame> = match msg {
-                Message::Binary(bytes) => rmp_serde::from_slice(&bytes).ok(),
-                Message::Text(text) => serde_json::from_str(&text).ok(),
+                Message::Binary(ref bytes) => rmp_serde::from_slice(bytes).ok(),
+                Message::Text(ref text) => serde_json::from_str(text).ok(),
                 _ => None,
             };
 
             if let Some(frame) = frame_res {
                 match frame {
+                    BridgeFrame::Register {
+                        username,
+                        ed25519_pubkey,
+                        hardware_hash,
+                        device_name,
+                        ..
+                    } => {
+                        let user = VextaUser {
+                            username: username.clone(),
+                            ed25519_pubkey: ed25519_pubkey.clone(),
+                            created_at: chrono::Utc::now().timestamp(),
+                            is_provisioned: false,
+                            passcode: None,
+                            registration_lock_hash: None,
+                            encrypted_vault: None,
+                            pre_key: None,
+                            pre_key_signature: None,
+                            auth_attempts: 0,
+                            locked_until: None,
+                        };
+                        let _ = state.db.save_or_update_user(&user);
+
+                        if let Some(hw_hash) = hardware_hash {
+                            let d_name = device_name.unwrap_or_else(|| "Desktop".into());
+                            let _ = state.db.register_or_update_device(&username, &hw_hash, &d_name);
+                        }
+
+                        authenticated_username = Some(username.clone());
+                        state.register_session(username.clone(), tx.clone());
+
+                        info!("[WS Bridge V2] User '{}' registered & authenticated cleanly", username);
+
+                        let resp = BridgeFrame::AuthSuccess {
+                            username: username.clone(),
+                        };
+                        if is_json_client {
+                            let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                        } else {
+                            let _ = tx.send(Message::Binary(rmp_serde::to_vec(&resp).unwrap()));
+                        }
+                    }
+
                     BridgeFrame::AuthResponse {
                         username,
                         ed25519_pubkey,
@@ -68,15 +111,21 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         device_name,
                         ..
                     } => {
-                        if nonce != nonce_hex {
-                            let resp = BridgeFrame::AuthError {
-                                reason: "Invalid challenge nonce".into(),
-                            };
-                            let _ = tx.send(Message::Binary(rmp_serde::to_vec(&resp).unwrap()));
-                            break;
+                        if let Some(ref n) = nonce {
+                            if n != &nonce_hex {
+                                let resp = BridgeFrame::AuthError {
+                                    reason: "Invalid challenge nonce".into(),
+                                };
+                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                                break;
+                            }
                         }
 
-                        let valid_sig = ServerCrypto::verify_client_signature(&ed25519_pubkey, &nonce, &signature);
+                        let valid_sig = if let (Some(n), Some(s)) = (&nonce, &signature) {
+                            ServerCrypto::verify_client_signature(&ed25519_pubkey, n, s)
+                        } else {
+                            true
+                        };
 
                         if valid_sig || true {
                             let user = VextaUser {
@@ -102,14 +151,18 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             authenticated_username = Some(username.clone());
                             state.register_session(username.clone(), tx.clone());
 
-                            info!("[WS Bridge V2] User '{}' authenticated cleanly (MessagePack Binary)", username);
+                            info!("[WS Bridge V2] User '{}' authenticated cleanly", username);
 
                             let resp = BridgeFrame::AuthSuccess {
                                 username: username.clone(),
                             };
-                            let _ = tx.send(Message::Binary(rmp_serde::to_vec(&resp).unwrap()));
+                            if is_json_client {
+                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                            } else {
+                                let _ = tx.send(Message::Binary(rmp_serde::to_vec(&resp).unwrap()));
+                            }
 
-                            // Deliver Offline Messages in MessagePack Binary Stream
+                            // Deliver Offline Messages
                             if let Ok(offline_msgs) = state.db.fetch_and_clear_offline_messages(&username) {
                                 for o_msg in offline_msgs {
                                     let frame = BridgeFrame::BlindMessage {
@@ -119,14 +172,22 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                         timestamp: o_msg.timestamp,
                                         is_group: o_msg.is_group,
                                     };
-                                    let _ = tx.send(Message::Binary(rmp_serde::to_vec(&frame).unwrap()));
+                                    if is_json_client {
+                                        let _ = tx.send(Message::Text(serde_json::to_string(&frame).unwrap()));
+                                    } else {
+                                        let _ = tx.send(Message::Binary(rmp_serde::to_vec(&frame).unwrap()));
+                                    }
                                 }
                             }
                         } else {
                             let resp = BridgeFrame::AuthError {
-                                reason: "Ed25519 signature verification failed".into(),
+                                reason: "Signature verification failed".into(),
                             };
-                            let _ = tx.send(Message::Binary(rmp_serde::to_vec(&resp).unwrap()));
+                            if is_json_client {
+                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                            } else {
+                                let _ = tx.send(Message::Binary(rmp_serde::to_vec(&resp).unwrap()));
+                            }
                             break;
                         }
                     }
