@@ -16,10 +16,11 @@ services:
     networks:
       - vexta-v2-net
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8000/api/announcements/"]
-      interval: 30s
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8000/api/announcements/ || exit 1"]
+      interval: 10s
       timeout: 5s
       retries: 3
+      start_period: 5s
 
   cloudflared:
     image: cloudflare/cloudflared:latest

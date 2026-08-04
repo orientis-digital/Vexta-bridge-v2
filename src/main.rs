@@ -37,7 +37,11 @@ async fn main() {
     std::fs::create_dir_all(&downloads_dir).ok();
 
     // 3. Initialize Shared App State (SQLite DB + Ed25519 Server Crypto)
-    let state = AppState::new("vexta_bridge_v2.db");
+    let db_path = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "vexta_bridge_v2.db".into());
+    if let Some(parent) = std::path::Path::new(&db_path).parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let state = AppState::new(&db_path);
 
     // 4. Configure Full CORS Middleware (Cloudflare Tunnel Compatible)
     let cors = CorsLayer::new()
