@@ -26,10 +26,14 @@ async fn main() {
     // 1. Initialize Logging
     tracing_subscriber::registry()
         .with(EnvFilter::new(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "vexta_bridge_v2=info,tower_http=info".into()),
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
         ))
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout))
         .init();
+
+    println!("====================================================");
+    println!(" [Vexta V2 Bridge] Server Logging Initialized (INFO)");
+    println!("====================================================");
 
     // 2. Initialize Shared App State (SQLite DB + Ed25519 Server Crypto)
     let db_path = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "vexta_bridge_v2.db".into());

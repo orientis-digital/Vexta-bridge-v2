@@ -55,8 +55,20 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         if let Ok(msg) = res {
             let is_json_client = matches!(msg, Message::Text(_));
             let frame_res: Option<BridgeFrame> = match msg {
-                Message::Binary(ref bytes) => rmp_serde::from_slice(bytes).ok(),
-                Message::Text(ref text) => serde_json::from_str(text).ok(),
+                Message::Binary(ref bytes) => match rmp_serde::from_slice::<BridgeFrame>(bytes) {
+                    Ok(f) => Some(f),
+                    Err(e) => {
+                        println!("[WS Bridge V2 ERROR] MessagePack parse error: {}", e);
+                        None
+                    }
+                },
+                Message::Text(ref text) => match serde_json::from_str::<BridgeFrame>(text) {
+                    Ok(f) => Some(f),
+                    Err(e) => {
+                        println!("[WS Bridge V2 ERROR] JSON deserialization error: {} | Raw frame: {}", e, text);
+                        None
+                    }
+                },
                 _ => None,
             };
 
