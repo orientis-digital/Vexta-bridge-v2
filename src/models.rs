@@ -65,6 +65,10 @@ pub enum BridgeFrame {
         passcode_hmac: Option<String>,
         hardware_hash: Option<String>,
         device_name: Option<String>,
+        os_name: Option<String>,
+        os_version: Option<String>,
+        device_type: Option<String>,
+        app_version: Option<String>,
     },
     #[serde(rename = "REGISTER")]
     Register {
@@ -75,6 +79,10 @@ pub enum BridgeFrame {
         passcode: Option<String>,
         hardware_hash: Option<String>,
         device_name: Option<String>,
+        os_name: Option<String>,
+        os_version: Option<String>,
+        device_type: Option<String>,
+        app_version: Option<String>,
     },
     #[serde(rename = "AUTH_SUCCESS")]
     AuthSuccess {
