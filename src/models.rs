@@ -57,18 +57,24 @@ pub enum BridgeFrame {
     #[serde(rename = "AUTH_RESPONSE")]
     AuthResponse {
         username: String,
+        #[serde(alias = "public_key")]
         ed25519_pubkey: String,
-        nonce: String,
-        signature: String,
+        nonce: Option<String>,
+        signature: Option<String>,
         passcode: Option<String>,
+        passcode_hmac: Option<String>,
         hardware_hash: Option<String>,
         device_name: Option<String>,
     },
     #[serde(rename = "REGISTER")]
     Register {
         username: String,
+        #[serde(alias = "public_key")]
         ed25519_pubkey: String,
-        passcode: String,
+        signature: Option<String>,
+        passcode: Option<String>,
+        hardware_hash: Option<String>,
+        device_name: Option<String>,
     },
     #[serde(rename = "AUTH_SUCCESS")]
     AuthSuccess {
