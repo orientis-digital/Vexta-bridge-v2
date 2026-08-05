@@ -249,7 +249,23 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                     request_id: req_id,
                                     recipient: recipient.clone(),
                                 };
-                                let _ = tx.send(Message::Binary(rmp_serde::to_vec(&resp).unwrap()));
+                                let msg = if is_json_client {
+                                    Message::Text(serde_json::to_string(&resp).unwrap())
+                                } else {
+                                    Message::Binary(rmp_serde::to_vec(&resp).unwrap())
+                                };
+                                let _ = tx.send(msg);
+
+                                // Live push updated friend request list to recipient if online
+                                if let Ok(reqs) = state.db.list_pending_requests(&recipient) {
+                                    let push = BridgeFrame::FriendRequestsList { requests: reqs };
+                                    let push_msg = if is_json_client {
+                                        Message::Text(serde_json::to_string(&push).unwrap())
+                                    } else {
+                                        Message::Binary(rmp_serde::to_vec(&push).unwrap())
+                                    };
+                                    let _ = state.send_to_user(&recipient, push_msg);
+                                }
                             }
                         }
                     }
@@ -258,6 +274,15 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         if let Some(ref user) = authenticated_username {
                             let _ = state.db.update_friend_request_status(request_id, "accepted");
                             info!("[WS Bridge V2] Friend request #{} ACCEPTED by user '@{}'", request_id, user);
+                            if let Ok(friends) = state.db.list_friends(user) {
+                                let resp = BridgeFrame::FriendsList { friends };
+                                let msg = if is_json_client {
+                                    Message::Text(serde_json::to_string(&resp).unwrap())
+                                } else {
+                                    Message::Binary(rmp_serde::to_vec(&resp).unwrap())
+                                };
+                                let _ = tx.send(msg);
+                            }
                         }
                     }
 
@@ -273,7 +298,12 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             info!("[WS Bridge V2] Listing friends for user '@{}'", username);
                             if let Ok(friends) = state.db.list_friends(username) {
                                 let resp = BridgeFrame::FriendsList { friends };
-                                let _ = tx.send(Message::Binary(rmp_serde::to_vec(&resp).unwrap()));
+                                let msg = if is_json_client {
+                                    Message::Text(serde_json::to_string(&resp).unwrap())
+                                } else {
+                                    Message::Binary(rmp_serde::to_vec(&resp).unwrap())
+                                };
+                                let _ = tx.send(msg);
                             }
                         }
                     }
@@ -283,7 +313,12 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             info!("[WS Bridge V2] Listing pending friend requests for user '@{}'", username);
                             if let Ok(requests) = state.db.list_pending_requests(username) {
                                 let resp = BridgeFrame::FriendRequestsList { requests };
-                                let _ = tx.send(Message::Binary(rmp_serde::to_vec(&resp).unwrap()));
+                                let msg = if is_json_client {
+                                    Message::Text(serde_json::to_string(&resp).unwrap())
+                                } else {
+                                    Message::Binary(rmp_serde::to_vec(&resp).unwrap())
+                                };
+                                let _ = tx.send(msg);
                             }
                         }
                     }
@@ -300,7 +335,12 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             info!("[WS Bridge V2] Listing devices for user '@{}'", username);
                             if let Ok(devices) = state.db.list_devices(username) {
                                 let resp = BridgeFrame::DevicesList { devices };
-                                let _ = tx.send(Message::Binary(rmp_serde::to_vec(&resp).unwrap()));
+                                let msg = if is_json_client {
+                                    Message::Text(serde_json::to_string(&resp).unwrap())
+                                } else {
+                                    Message::Binary(rmp_serde::to_vec(&resp).unwrap())
+                                };
+                                let _ = tx.send(msg);
                             }
                         }
                     }
