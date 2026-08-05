@@ -319,6 +319,84 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         }
                     }
 
+                    BridgeFrame::DeviceLoginRequest {
+                        username,
+                        device_name,
+                        os_name,
+                        device_pubkey,
+                        pin_challenge_hash,
+                    } => {
+                        info!("[WS Bridge V2] DEVICE_LOGIN_REQUEST from user '@{}' (device: {})", username, device_name);
+                        let push_frame = BridgeFrame::PushDeviceRequest {
+                            device_id: format!("dev_{}", chrono::Utc::now().timestamp_millis()),
+                            device_name: device_name.clone(),
+                            os_name: os_name.clone(),
+                            pin_challenge: pin_challenge_hash.clone(),
+                            device_pubkey: device_pubkey.clone(),
+                        };
+                        let payload_bytes = rmp_serde::to_vec(&push_frame).unwrap();
+                        let text_json = serde_json::to_string(&push_frame).unwrap();
+                        let _ = state.send_to_user(&username, Message::Binary(payload_bytes));
+                        let _ = state.send_to_user(&username, Message::Text(text_json));
+                    }
+
+                    BridgeFrame::ApproveDevice {
+                        target_device_id,
+                        encrypted_key_bundle,
+                        encrypted_friend_roster,
+                    } => {
+                        if let Some(ref username) = authenticated_username {
+                            info!("[WS Bridge V2] User '@{}' APPROVED device: {}", username, target_device_id);
+                            let approve_evt = BridgeFrame::DeviceApprovedEvent {
+                                encrypted_key_bundle: encrypted_key_bundle.clone(),
+                                encrypted_friend_roster: encrypted_friend_roster.clone(),
+                            };
+                            let payload_bytes = rmp_serde::to_vec(&approve_evt).unwrap();
+                            let text_json = serde_json::to_string(&approve_evt).unwrap();
+                            let _ = state.send_to_user(username, Message::Binary(payload_bytes));
+                            let _ = state.send_to_user(username, Message::Text(text_json));
+                        }
+                    }
+
+                    BridgeFrame::RejectDevice {
+                        target_device_id,
+                        reason,
+                    } => {
+                        if let Some(ref username) = authenticated_username {
+                            info!("[WS Bridge V2] User '@{}' REJECTED device: {}", username, target_device_id);
+                            let reject_evt = BridgeFrame::DeviceRejectedEvent {
+                                reason: reason.clone(),
+                            };
+                            let payload_bytes = rmp_serde::to_vec(&reject_evt).unwrap();
+                            let text_json = serde_json::to_string(&reject_evt).unwrap();
+                            let _ = state.send_to_user(username, Message::Binary(payload_bytes));
+                            let _ = state.send_to_user(username, Message::Text(text_json));
+                        }
+                    }
+
+                    BridgeFrame::SyncFriendRoster { encrypted_roster_blob } => {
+                        if let Some(ref username) = authenticated_username {
+                            info!("[WS Bridge V2] User '@{}' updated encrypted friend roster", username);
+                            let _ = state.db.update_friend_roster(username, &encrypted_roster_blob);
+                        }
+                    }
+
+                    BridgeFrame::GetFriendRoster => {
+                        if let Some(ref username) = authenticated_username {
+                            info!("[WS Bridge V2] User '@{}' requested encrypted friend roster", username);
+                            if let Ok(Some(user)) = state.db.get_user(username) {
+                                let resp = BridgeFrame::FriendRosterResponse {
+                                    encrypted_roster_blob: user.encrypted_friend_roster,
+                                };
+                                if is_json_client {
+                                    let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                                } else {
+                                    let _ = tx.send(Message::Binary(rmp_serde::to_vec(&resp).unwrap()));
+                                }
+                            }
+                        }
+                    }
+
                     BridgeFrame::UpdateVault { vault_data } => {
                         if let Some(ref username) = authenticated_username {
                             info!("[WS Bridge V2] User '@{}' updated key vault data", username);
