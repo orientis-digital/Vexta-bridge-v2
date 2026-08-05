@@ -206,7 +206,7 @@ impl DbManager {
     pub fn list_all_users(&self) -> Result<Vec<VextaUser>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT username, ed25519_pubkey, created_at, is_provisioned, passcode, registration_lock_hash, encrypted_vault, pre_key, pre_key_signature, auth_attempts, locked_until FROM users ORDER BY created_at DESC",
+            "SELECT username, ed25519_pubkey, created_at, is_provisioned, passcode, registration_lock_hash, encrypted_vault, encrypted_friend_roster, pre_key, pre_key_signature, auth_attempts, locked_until FROM users ORDER BY created_at DESC",
         )?;
 
         let rows = stmt.query_map([], |row| {
@@ -219,10 +219,11 @@ impl DbManager {
                 passcode: row.get(4)?,
                 registration_lock_hash: row.get(5)?,
                 encrypted_vault: row.get(6)?,
-                pre_key: row.get(7)?,
-                pre_key_signature: row.get(8)?,
-                auth_attempts: row.get(9)?,
-                locked_until: row.get(10)?,
+                encrypted_friend_roster: row.get(7)?,
+                pre_key: row.get(8)?,
+                pre_key_signature: row.get(9)?,
+                auth_attempts: row.get(10)?,
+                locked_until: row.get(11)?,
             })
         })?;
 
