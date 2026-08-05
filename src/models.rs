@@ -9,6 +9,7 @@ pub struct VextaUser {
     pub passcode: Option<String>,
     pub registration_lock_hash: Option<String>,
     pub encrypted_vault: Option<String>,
+    pub encrypted_friend_roster: Option<String>,
     pub pre_key: Option<String>,
     pub pre_key_signature: Option<String>,
     pub auth_attempts: i32,
@@ -125,6 +126,55 @@ pub enum BridgeFrame {
     UpdateRecoveryLock {
         lock_hash: String,
     },
+
+    // Out-of-Band Device Authorization & Key Delegation Frames
+    #[serde(rename = "DEVICE_LOGIN_REQUEST")]
+    DeviceLoginRequest {
+        username: String,
+        device_name: String,
+        os_name: String,
+        device_pubkey: String,
+        pin_challenge_hash: String,
+    },
+    #[serde(rename = "PUSH_DEVICE_REQUEST")]
+    PushDeviceRequest {
+        device_id: String,
+        device_name: String,
+        os_name: String,
+        pin_challenge: String,
+        device_pubkey: String,
+    },
+    #[serde(rename = "APPROVE_DEVICE")]
+    ApproveDevice {
+        target_device_id: String,
+        encrypted_key_bundle: String,
+        encrypted_friend_roster: Option<String>,
+    },
+    #[serde(rename = "DEVICE_APPROVED_EVENT")]
+    DeviceApprovedEvent {
+        encrypted_key_bundle: String,
+        encrypted_friend_roster: Option<String>,
+    },
+    #[serde(rename = "REJECT_DEVICE")]
+    RejectDevice {
+        target_device_id: String,
+        reason: Option<String>,
+    },
+    #[serde(rename = "DEVICE_REJECTED_EVENT")]
+    DeviceRejectedEvent {
+        reason: Option<String>,
+    },
+    #[serde(rename = "SYNC_FRIEND_ROSTER")]
+    SyncFriendRoster {
+        encrypted_roster_blob: String,
+    },
+    #[serde(rename = "GET_FRIEND_ROSTER")]
+    GetFriendRoster,
+    #[serde(rename = "FRIEND_ROSTER_RESPONSE")]
+    FriendRosterResponse {
+        encrypted_roster_blob: Option<String>,
+    },
+
     // Friend Request Frames
     #[serde(rename = "SEND_FRIEND_REQUEST")]
     SendFriendRequest {

@@ -43,6 +43,7 @@ impl DbManager {
                 passcode TEXT,
                 registration_lock_hash TEXT,
                 encrypted_vault TEXT,
+                encrypted_friend_roster TEXT,
                 pre_key TEXT,
                 pre_key_signature TEXT,
                 auth_attempts INTEGER NOT NULL DEFAULT 0,
@@ -89,6 +90,9 @@ impl DbManager {
             );",
         )?;
 
+        // Column migration for existing db files
+        let _ = conn.execute("ALTER TABLE users ADD COLUMN encrypted_friend_roster TEXT", []);
+
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -97,11 +101,12 @@ impl DbManager {
     pub fn save_or_update_user(&self, user: &VextaUser) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO users (username, ed25519_pubkey, created_at, is_provisioned, passcode, registration_lock_hash, encrypted_vault, pre_key, pre_key_signature, auth_attempts, locked_until)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            "INSERT INTO users (username, ed25519_pubkey, created_at, is_provisioned, passcode, registration_lock_hash, encrypted_vault, encrypted_friend_roster, pre_key, pre_key_signature, auth_attempts, locked_until)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(username) DO UPDATE SET
              ed25519_pubkey=excluded.ed25519_pubkey,
-             encrypted_vault=COALESCE(excluded.encrypted_vault, users.encrypted_vault)",
+             encrypted_vault=COALESCE(excluded.encrypted_vault, users.encrypted_vault),
+             encrypted_friend_roster=COALESCE(excluded.encrypted_friend_roster, users.encrypted_friend_roster)",
             params![
                 user.username,
                 user.ed25519_pubkey,
@@ -110,6 +115,7 @@ impl DbManager {
                 user.passcode,
                 user.registration_lock_hash,
                 user.encrypted_vault,
+                user.encrypted_friend_roster,
                 user.pre_key,
                 user.pre_key_signature,
                 user.auth_attempts,
@@ -122,7 +128,7 @@ impl DbManager {
     pub fn get_user(&self, username: &str) -> Result<Option<VextaUser>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT username, ed25519_pubkey, created_at, is_provisioned, passcode, registration_lock_hash, encrypted_vault, pre_key, pre_key_signature, auth_attempts, locked_until FROM users WHERE username = ?1",
+            "SELECT username, ed25519_pubkey, created_at, is_provisioned, passcode, registration_lock_hash, encrypted_vault, encrypted_friend_roster, pre_key, pre_key_signature, auth_attempts, locked_until FROM users WHERE username = ?1",
         )?;
 
         let mut rows = stmt.query(params![username])?;
@@ -136,10 +142,11 @@ impl DbManager {
                 passcode: row.get(4)?,
                 registration_lock_hash: row.get(5)?,
                 encrypted_vault: row.get(6)?,
-                pre_key: row.get(7)?,
-                pre_key_signature: row.get(8)?,
-                auth_attempts: row.get(9)?,
-                locked_until: row.get(10)?,
+                encrypted_friend_roster: row.get(7)?,
+                pre_key: row.get(8)?,
+                pre_key_signature: row.get(9)?,
+                auth_attempts: row.get(10)?,
+                locked_until: row.get(11)?,
             }))
         } else {
             Ok(None)
@@ -151,6 +158,15 @@ impl DbManager {
         conn.execute(
             "UPDATE users SET encrypted_vault = ?1 WHERE username = ?2",
             params![vault_data, username],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_friend_roster(&self, username: &str, roster_data: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE users SET encrypted_friend_roster = ?1 WHERE username = ?2",
+            params![roster_data, username],
         )?;
         Ok(())
     }
