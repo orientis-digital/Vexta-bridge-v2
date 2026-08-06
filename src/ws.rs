@@ -55,20 +55,27 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         if let Ok(msg) = res {
             let is_json_client = matches!(msg, Message::Text(_));
             let frame_res: Option<BridgeFrame> = match msg {
-                Message::Binary(ref bytes) => match rmp_serde::from_slice::<BridgeFrame>(bytes) {
-                    Ok(f) => Some(f),
-                    Err(e) => {
-                        println!("[WS Bridge V2 ERROR] MessagePack parse error: {}", e);
+                Message::Binary(ref bytes) => {
+                    if let Ok(f) = rmp_serde::from_slice::<BridgeFrame>(bytes) {
+                        Some(f)
+                    } else if let Ok(f) = serde_json::from_slice::<BridgeFrame>(bytes) {
+                        Some(f)
+                    } else {
+                        println!("[WS Bridge V2 ERROR] Binary frame decode error (neither MsgPack nor JSON)");
                         None
                     }
-                },
-                Message::Text(ref text) => match serde_json::from_str::<BridgeFrame>(text) {
-                    Ok(f) => Some(f),
-                    Err(e) => {
-                        println!("[WS Bridge V2 ERROR] JSON deserialization error: {} | Raw frame: {}", e, text);
+                }
+                Message::Text(ref text) => {
+                    let trimmed = text.trim();
+                    if let Ok(f) = serde_json::from_str::<BridgeFrame>(trimmed) {
+                        Some(f)
+                    } else if let Ok(f) = rmp_serde::from_slice::<BridgeFrame>(trimmed.as_bytes()) {
+                        Some(f)
+                    } else {
+                        println!("[WS Bridge V2 ERROR] JSON/Text deserialization error for raw frame: {}", text);
                         None
                     }
-                },
+                }
                 _ => None,
             };
 
