@@ -93,6 +93,14 @@ pub enum BridgeFrame {
     AuthError {
         reason: String,
     },
+    #[serde(rename = "PING")]
+    Ping {
+        timestamp: Option<i64>,
+    },
+    #[serde(rename = "PONG")]
+    Pong {
+        timestamp: Option<i64>,
+    },
     #[serde(rename = "SEND_MESSAGE")]
     SendMessage {
         recipient: String,

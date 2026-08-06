@@ -1,0 +1,21 @@
+# ==============================================================================
+# Cloudflare Tunnel Configuration Example (config.yml) for Vexta Bridge V2
+# ==============================================================================
+# Copy this file to /etc/cloudflared/config.yml or use in Zero Trust Dashboard.
+
+tunnel: YOUR_TUNNEL_UUID_HERE
+credentials-file: /etc/cloudflared/credentials.json
+
+ingress:
+  # Vexta Bridge V2 WebSocket & REST API Endpoint
+  - hostname: vexta-api.nexusec.space
+    service: http://vexta-bridge-v2:8000
+    originRequest:
+      connectTimeout: 30s
+      keepAliveTimeout: 120s
+      keepAliveConnections: 100
+      tcpKeepAlive: 15s                  # Maintains active TCP keep-alive inside Docker network
+      noTLSVerify: true
+
+  # Default Fallback Rule (Returns HTTP 444 for unmapped subdomains)
+  - service: http_status:444

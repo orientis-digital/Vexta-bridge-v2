@@ -28,6 +28,8 @@ services:
     command: tunnel --no-autoupdate run
     environment:
       - TUNNEL_TOKEN=${TUNNEL_TOKEN:-""}
+      - TUNNEL_TRANSPORT_PROTOCOL=quic
+      - TUNNEL_METRICS=0.0.0.0:2000
     networks:
       - vexta-v2-net
     depends_on:
