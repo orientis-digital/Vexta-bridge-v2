@@ -210,6 +210,19 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         }
                     }
 
+                    BridgeFrame::Ping { timestamp } => {
+                        let resp = BridgeFrame::Pong {
+                            timestamp: timestamp.or_else(|| Some(chrono::Utc::now().timestamp_millis())),
+                        };
+                        if is_json_client {
+                            let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                        } else {
+                            let _ = tx.send(Message::Binary(rmp_serde::to_vec(&resp).unwrap()));
+                        }
+                    }
+
+                    BridgeFrame::Pong { .. } => {}
+
                     BridgeFrame::SendMessage {
                         recipient,
                         ciphertext,
