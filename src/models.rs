@@ -127,7 +127,10 @@ pub enum BridgeFrame {
     },
     #[serde(rename = "ACK")]
     Ack {
+        #[serde(alias = "id")]
         message_id: i64,
+        #[serde(default)]
+        hardware_hash: Option<String>,
     },
     #[serde(rename = "UPDATE_VAULT")]
     UpdateVault {
