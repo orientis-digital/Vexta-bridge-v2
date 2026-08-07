@@ -248,6 +248,12 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                         }
                     }
 
+                    BridgeFrame::Ack { message_id, .. } => {
+                        if let Some(ref sender) = authenticated_username {
+                            info!("[WS Bridge V2] Received ACK from user '{}' for message ID {}", sender, message_id);
+                        }
+                    }
+
                     BridgeFrame::SendFriendRequest { recipient } => {
                         if let Some(ref sender) = authenticated_username {
                             let clean_recipient = clean_user(&recipient);
