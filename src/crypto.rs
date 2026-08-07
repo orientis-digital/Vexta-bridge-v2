@@ -24,6 +24,16 @@ impl ServerCrypto {
         }
     }
 
+    pub fn generate_nonce() -> [u8; 32] {
+        let mut nonce = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+        nonce
+    }
+
+    pub fn get_pubkey_pem(&self) -> String {
+        self.pubkey_base64.clone()
+    }
+
     pub fn sign_nonce(&self, nonce: &str) -> String {
         let sig = self.signing_key.sign(nonce.as_bytes());
         STANDARD.encode(sig.to_bytes())

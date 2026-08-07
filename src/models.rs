@@ -47,13 +47,22 @@ pub struct BlindMessage {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum RequestIdOrUser {
+    Int(i64),
+    Str(String),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type")]
 pub enum BridgeFrame {
     #[serde(rename = "AUTH_CHALLENGE")]
     AuthChallenge {
         nonce: String,
+        #[serde(alias = "server_pubkey")]
         server_public_key: String,
-        server_signature: String,
+        #[serde(default)]
+        server_signature: Option<String>,
     },
     #[serde(rename = "AUTH_RESPONSE")]
     AuthResponse {
@@ -195,11 +204,21 @@ pub enum BridgeFrame {
     },
     #[serde(rename = "ACCEPT_FRIEND_REQUEST")]
     AcceptFriendRequest {
-        request_id: i64,
+        #[serde(default)]
+        request_id: Option<RequestIdOrUser>,
+        #[serde(default)]
+        id: Option<i64>,
+        #[serde(default)]
+        username: Option<String>,
     },
     #[serde(rename = "REJECT_FRIEND_REQUEST")]
     RejectFriendRequest {
-        request_id: i64,
+        #[serde(default)]
+        request_id: Option<RequestIdOrUser>,
+        #[serde(default)]
+        id: Option<i64>,
+        #[serde(default)]
+        username: Option<String>,
     },
     #[serde(rename = "LIST_FRIENDS")]
     ListFriends,
