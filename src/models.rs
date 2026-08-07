@@ -131,10 +131,18 @@ pub enum BridgeFrame {
     },
     #[serde(rename = "UPDATE_VAULT")]
     UpdateVault {
+        #[serde(alias = "enc_vault")]
         vault_data: String,
     },
     #[serde(rename = "GET_VAULT")]
-    GetVault,
+    GetVault {
+        #[serde(default)]
+        username: Option<String>,
+    },
+    #[serde(rename = "UPDATE_KEY")]
+    UpdateKey {
+        new_public_key: String,
+    },
     #[serde(rename = "VAULT_RESPONSE")]
     VaultResponse {
         vault_data: Option<String>,
@@ -234,6 +242,7 @@ pub enum BridgeFrame {
     },
     #[serde(rename = "REMOVE_FRIEND")]
     RemoveFriend {
+        #[serde(alias = "username")]
         friend_username: String,
     },
 
