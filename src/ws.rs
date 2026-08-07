@@ -251,19 +251,42 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                     BridgeFrame::SendFriendRequest { recipient } => {
                         if let Some(ref sender) = authenticated_username {
                             let clean_recipient = clean_user(&recipient);
-                            if let Ok(req_id) = state.db.create_friend_request(sender, &clean_recipient) {
-                                info!("[WS Bridge V2] Friend request created: '{}' -> '{}' (id={})", sender, clean_recipient, req_id);
-                                let resp = BridgeFrame::FriendRequestSent {
-                                    request_id: req_id,
-                                    recipient: clean_recipient.clone(),
+                            if clean_recipient == clean_user(sender) {
+                                let err = BridgeFrame::Error {
+                                    message: "Cannot send friend request to yourself".to_string(),
                                 };
-                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                                let _ = tx.send(Message::Text(serde_json::to_string(&err).unwrap()));
+                            } else {
+                                match state.db.get_user(&clean_recipient) {
+                                    Ok(Some(_)) => {
+                                        if let Ok(req_id) = state.db.create_friend_request(sender, &clean_recipient) {
+                                            info!("[WS Bridge V2] Friend request created: '{}' -> '{}' (id={})", sender, clean_recipient, req_id);
+                                            let resp = BridgeFrame::FriendRequestSent {
+                                                request_id: req_id,
+                                                recipient: clean_recipient.clone(),
+                                            };
+                                            let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
 
-                                // Live push updated friend request list to recipient if online
-                                if let Ok(reqs) = state.db.list_pending_requests(&clean_recipient) {
-                                    let push = BridgeFrame::FriendRequestsList { requests: reqs };
-                                    let push_msg = Message::Text(serde_json::to_string(&push).unwrap());
-                                    let _ = state.send_to_user(&clean_recipient, push_msg);
+                                            // Live push updated friend request list to recipient if online
+                                            if let Ok(reqs) = state.db.list_pending_requests(&clean_recipient) {
+                                                let push = BridgeFrame::FriendRequestsList { requests: reqs };
+                                                let push_msg = Message::Text(serde_json::to_string(&push).unwrap());
+                                                let _ = state.send_to_user(&clean_recipient, push_msg);
+                                            }
+                                        } else {
+                                            let err = BridgeFrame::Error {
+                                                message: format!("Failed to create friend request for '{}'", clean_recipient),
+                                            };
+                                            let _ = tx.send(Message::Text(serde_json::to_string(&err).unwrap()));
+                                        }
+                                    }
+                                    _ => {
+                                        info!("[WS Bridge V2] Send friend request failed: user '{}' does not exist", clean_recipient);
+                                        let err = BridgeFrame::Error {
+                                            message: format!("User '{}' does not exist", clean_recipient),
+                                        };
+                                        let _ = tx.send(Message::Text(serde_json::to_string(&err).unwrap()));
+                                    }
                                 }
                             }
                         }
