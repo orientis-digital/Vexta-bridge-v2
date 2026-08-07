@@ -464,6 +464,13 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                         }
                     }
 
+                    BridgeFrame::UpdateKey { new_public_key } => {
+                        if let Some(ref username) = authenticated_username {
+                            info!("[WS Bridge V2] User '{}' updated public key", username);
+                            let _ = state.db.update_user_pubkey(username, &new_public_key);
+                        }
+                    }
+
                     BridgeFrame::UpdateVault { vault_data } => {
                         if let Some(ref username) = authenticated_username {
                             info!("[WS Bridge V2] User '{}' updated key vault data", username);
@@ -471,10 +478,11 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                         }
                     }
 
-                    BridgeFrame::GetVault => {
-                        if let Some(ref username) = authenticated_username {
-                            info!("[WS Bridge V2] User '{}' requested key vault data", username);
-                            if let Ok(Some(user)) = state.db.get_user(username) {
+                    BridgeFrame::GetVault { username: req_username } => {
+                        let target_user = req_username.as_deref().or(authenticated_username.as_deref());
+                        if let Some(user_name) = target_user {
+                            info!("[WS Bridge V2] User '{}' requested key vault data", user_name);
+                            if let Ok(Some(user)) = state.db.get_user(user_name) {
                                 let resp = BridgeFrame::VaultResponse {
                                     vault_data: user.encrypted_vault,
                                 };
