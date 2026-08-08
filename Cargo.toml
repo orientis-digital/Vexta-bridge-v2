@@ -2,6 +2,7 @@
 name = "vexta-bridge-v2"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 description = "Vexta V2 High-Performance Zero-Knowledge Signal Relay Bridge in Rust"
 
 [dependencies]
