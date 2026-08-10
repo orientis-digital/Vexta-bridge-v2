@@ -52,12 +52,16 @@ async fn main() {
     let app = Router::new()
         // WebSocket Relay
         .route("/ws/chat/", get(ws::ws_handler))
+        .route("/ws/chat", get(ws::ws_handler))
         
         // Public REST Endpoints
         .route("/api/check-account/:username", get(check_account_handler))
         .route("/api/announcements/", get(public_announcements_handler))
+        .route("/api/announcements", get(public_announcements_handler))
         
-        // Private Embedded Admin UI
+        // Embedded Admin UI (Supports /admin, /admin/, and root /)
+        .route("/", get(admin_ui_handler))
+        .route("/admin", get(admin_ui_handler))
         .route("/admin/", get(admin_ui_handler))
         
         // Protected Admin REST APIs (Requires X-Admin-Secret Header)
