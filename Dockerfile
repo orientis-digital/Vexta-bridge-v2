@@ -5,8 +5,8 @@ FROM node:20-alpine AS ui-builder
 
 WORKDIR /app/admin-ui
 
-COPY admin-ui/package.json ./
-RUN npm install
+COPY admin-ui/package*.json ./
+RUN npm install --legacy-peer-deps
 
 COPY admin-ui/ ./
 RUN npm run build
