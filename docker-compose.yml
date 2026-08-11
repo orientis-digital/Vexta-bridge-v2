@@ -11,6 +11,8 @@ services:
       - RUST_LOG=${RUST_LOG:-info}
       - DATABASE_PATH=/app/data/vexta_bridge_v2.db
       - ADMIN_SECRET_TOKEN=${ADMIN_SECRET_TOKEN:-vexta_admin_secret_key_2026}
+      - ADMIN_SECRET=${ADMIN_SECRET_TOKEN:-vexta_admin_secret_key_2026}
+    # Admin UI accessible at: http://localhost:8000/admin (Default secret: vexta_admin_secret_key_2026)
     volumes:
       - vexta_bridge_data:/app/data
     networks:

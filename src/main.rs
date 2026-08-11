@@ -107,9 +107,15 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
+fn get_admin_secret_token() -> String {
+    std::env::var("ADMIN_SECRET_TOKEN")
+        .or_else(|_| std::env::var("ADMIN_SECRET"))
+        .unwrap_or_else(|_| "vexta_admin_secret_key_2026".to_string())
+}
+
 // Check Admin Secret Token Header
 fn verify_admin_auth(headers: &HeaderMap) -> bool {
-    let expected_secret = std::env::var("ADMIN_SECRET_TOKEN").unwrap_or_else(|_| "vexta_admin_secret_key_2026".into());
+    let expected_secret = get_admin_secret_token();
     if let Some(token) = headers.get("x-admin-secret").or_else(|| headers.get("authorization")) {
         if let Ok(str_val) = token.to_str() {
             let clean_val = str_val.trim_start_matches("Bearer ").trim();
@@ -132,8 +138,7 @@ async fn admin_events_sse_handler(
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
     let auth_valid = verify_admin_auth(&headers) || {
         if let Some(token) = &query.token {
-            let expected_secret = std::env::var("ADMIN_SECRET").unwrap_or_else(|_| "vexta_admin_secret_2026".to_string());
-            token == &expected_secret
+            token == &get_admin_secret_token()
         } else {
             false
         }

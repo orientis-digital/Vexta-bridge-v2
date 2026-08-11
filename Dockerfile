@@ -48,7 +48,9 @@ COPY --from=ui-builder /app/admin-ui/dist /app/admin-ui/dist
 VOLUME ["/app/data"]
 
 ENV RUST_LOG=info \
-    DATABASE_PATH=/app/data/vexta_bridge_v2.db
+    DATABASE_PATH=/app/data/vexta_bridge_v2.db \
+    ADMIN_SECRET_TOKEN=vexta_admin_secret_key_2026 \
+    ADMIN_SECRET=vexta_admin_secret_key_2026
 
 EXPOSE 8000
 
