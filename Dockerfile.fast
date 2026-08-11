@@ -4,8 +4,11 @@ RUN apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app
 
-# Copy pre-compiled binary
+# Copy pre-compiled binary from host
 COPY target/release/vexta-bridge-v2 /app/vexta-bridge-v2
+
+# Copy pre-compiled React Admin UI dist from host
+COPY admin-ui/dist /app/admin-ui/dist
 
 # Persistent volume for SQLite WAL database
 VOLUME ["/app/data"]

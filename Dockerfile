@@ -1,5 +1,18 @@
 # ------------------------------------------------------------------------------
-# Stage 1: Build static binary with Rust & Musl
+# Stage 1: Build React Admin UI
+# ------------------------------------------------------------------------------
+FROM node:20-alpine AS ui-builder
+
+WORKDIR /app/admin-ui
+
+COPY admin-ui/package.json ./
+RUN npm install
+
+COPY admin-ui/ ./
+RUN npm run build
+
+# ------------------------------------------------------------------------------
+# Stage 2: Build static binary with Rust & Musl
 # ------------------------------------------------------------------------------
 FROM rust:1.94-alpine AS builder
 
@@ -17,7 +30,7 @@ COPY src/ ./src/
 RUN cargo build --release
 
 # ------------------------------------------------------------------------------
-# Stage 2: Ultra-lightweight Minimal Runtime Container (< 25MB total size)
+# Stage 3: Ultra-lightweight Minimal Runtime Container
 # ------------------------------------------------------------------------------
 FROM alpine:latest
 
@@ -25,8 +38,11 @@ RUN apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app
 
-# Copy compiled binary from builder stage
+# Copy compiled Rust binary
 COPY --from=builder /app/target/release/vexta-bridge-v2 /app/vexta-bridge-v2
+
+# Copy compiled React Admin UI static bundle
+COPY --from=ui-builder /app/admin-ui/dist /app/admin-ui/dist
 
 # Persistent volume for SQLite WAL database
 VOLUME ["/app/data"]

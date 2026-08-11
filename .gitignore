@@ -1,8 +1,28 @@
+# Rust Build Artifacts
 /target
+Cargo.lock
+
+# Environment Files
 .env
 .env.local
+.env.*.local
+
+# Databases & Runtime Files
 *.db
 *.db-wal
 *.db-shm
 *.log
+
+# React Admin UI (admin-ui)
+admin-ui/node_modules/
+admin-ui/dist/
+admin-ui/.vite/
+admin-ui/npm-debug.log*
+admin-ui/yarn-debug.log*
+admin-ui/yarn-error.log*
+
+# OS / Editor Files
 .DS_Store
+Thumbs.db
+.vscode/
+.idea/

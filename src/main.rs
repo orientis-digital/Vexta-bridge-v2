@@ -18,11 +18,15 @@ use state::AppState;
 use std::net::SocketAddr;
 
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::{ServeDir, ServeFile};
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[tokio::main]
 async fn main() {
+    // 0. Load .env environment variables if present
+    dotenvy::dotenv().ok();
+
     // 1. Initialize Logging
     tracing_subscriber::registry()
         .with(EnvFilter::new(
@@ -49,7 +53,7 @@ async fn main() {
         .allow_headers(Any);
 
     // 4. Build Axum Router with Admin Console & Public APIs
-    let app = Router::new()
+    let base_app = Router::new()
         // WebSocket Relay
         .route("/ws/chat/", get(ws::ws_handler))
         .route("/ws/chat", get(ws::ws_handler))
@@ -59,20 +63,32 @@ async fn main() {
         .route("/api/announcements/", get(public_announcements_handler))
         .route("/api/announcements", get(public_announcements_handler))
         
-        // Embedded Admin UI (Supports /admin, /admin/, and root /)
-        .route("/", get(admin_ui_handler))
-        .route("/admin", get(admin_ui_handler))
-        .route("/admin/", get(admin_ui_handler))
-        
         // Protected Admin REST APIs (Requires X-Admin-Secret Header)
         .route("/api/admin/stats", get(admin_stats_handler))
         .route("/api/admin/users", get(admin_list_users_handler))
         .route("/api/admin/users/:username", delete(admin_delete_user_handler))
+        .route("/api/admin/devices", get(admin_list_devices_handler))
         .route("/api/admin/announcements", get(admin_list_announcements_handler).post(admin_post_announcement_handler))
-        .route("/api/admin/announcements/:id", delete(admin_delete_announcement_handler))
-        
-        .layer(cors)
-        .with_state(state);
+        .route("/api/admin/announcements/:id", delete(admin_delete_announcement_handler));
+
+    // Admin UI Routing: Serve React bundle from 'admin-ui/dist' if built, else fallback to embedded HTML
+    let admin_dist_path = std::path::Path::new("admin-ui/dist");
+    let app = if admin_dist_path.exists() {
+        info!("📦 Serving compiled React Admin UI from 'admin-ui/dist'");
+        let serve_service = ServeDir::new("admin-ui/dist")
+            .fallback(ServeFile::new("admin-ui/dist/index.html"));
+        base_app
+            .nest_service("/admin", serve_service.clone())
+            .fallback_service(serve_service)
+    } else {
+        info!("📄 Serving embedded fallback Admin UI");
+        base_app
+            .route("/", get(admin_ui_handler))
+            .route("/admin", get(admin_ui_handler))
+            .route("/admin/", get(admin_ui_handler))
+    };
+
+    let app = app.layer(cors).with_state(state);
 
     // 5. Start TCP Server on Port 8000
     let addr = SocketAddr::from(([0, 0, 0, 0], 8000));
@@ -156,6 +172,30 @@ async fn admin_delete_user_handler(
     info!("[Admin Console] Deleted user '{}'", username);
 
     (StatusCode::OK, Json(json!({"success": true, "deleted_username": username})))
+}
+
+// Admin List All Devices (across all users)
+async fn admin_list_devices_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if !verify_admin_auth(&headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
+    }
+
+    if let Ok(users) = state.db.list_all_users() {
+        let mut all_devices = Vec::new();
+        for user in &users {
+            if let Ok(devices) = state.db.list_devices(&user.username) {
+                for d in devices {
+                    all_devices.push(d);
+                }
+            }
+        }
+        return (StatusCode::OK, Json(serde_json::to_value(all_devices).unwrap()));
+    }
+
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})))
 }
 
 #[derive(Deserialize)]
