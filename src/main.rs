@@ -6,12 +6,15 @@ mod state;
 mod ws;
 
 use axum::{
-    extract::{ws::Message, Path, State},
+    extract::{ws::Message, Path, Query, State},
     http::{HeaderMap, StatusCode},
-    response::{Html, IntoResponse, Json},
+    response::{sse::{Event, Sse}, Html, IntoResponse, Json},
     routing::{delete, get, post},
     Router,
 };
+use futures_util::stream::{self, Stream};
+use std::convert::Infallible;
+use std::time::Duration;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use state::AppState;
@@ -63,7 +66,7 @@ async fn main() {
         .route("/api/announcements/", get(public_announcements_handler))
         .route("/api/announcements", get(public_announcements_handler))
         
-        // Protected Admin REST APIs (Requires X-Admin-Secret Header)
+        .route("/api/admin/events", get(admin_events_sse_handler))
         .route("/api/admin/stats", get(admin_stats_handler))
         .route("/api/admin/sessions", get(admin_list_sessions_handler))
         .route("/api/admin/sessions/:username", delete(admin_disconnect_session_handler))
@@ -114,6 +117,47 @@ fn verify_admin_auth(headers: &HeaderMap) -> bool {
         }
     }
     false
+}
+
+#[derive(Deserialize)]
+struct SseAuthQuery {
+    token: Option<String>,
+}
+
+// Admin Real-time Events SSE Stream Handler
+async fn admin_events_sse_handler(
+    headers: HeaderMap,
+    Query(query): Query<SseAuthQuery>,
+    State(state): State<AppState>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
+    let auth_valid = verify_admin_auth(&headers) || {
+        if let Some(token) = &query.token {
+            let expected_secret = std::env::var("ADMIN_SECRET").unwrap_or_else(|_| "vexta_admin_secret_2026".to_string());
+            token == &expected_secret
+        } else {
+            false
+        }
+    };
+
+    if !auth_valid {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let rx = state.broadcast_tx.subscribe();
+    let stream = stream::unfold(rx, |mut rx| async move {
+        loop {
+            match rx.recv().await {
+                Ok(msg) => {
+                    let event = Event::default().data(msg);
+                    return Some((Ok(event), rx));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    });
+
+    Ok(Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(15))))
 }
 
 // Embedded Admin UI Page
@@ -360,6 +404,12 @@ async fn admin_post_announcement_handler(
             let tx = item.value();
             let _ = tx.send(Message::Text(frame_str.clone()));
         }
+
+        state.emit_event(&json!({
+            "event": "announcement_created",
+            "id": id,
+            "message": payload.message,
+        }).to_string());
 
         return (StatusCode::OK, Json(json!({"success": true, "id": id})));
     }

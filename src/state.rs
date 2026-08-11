@@ -18,6 +18,7 @@ pub struct AppState {
     pub start_time: i64,
     pub total_messages_relayed: Arc<AtomicU64>,
     pub total_bytes_relayed: Arc<AtomicU64>,
+    pub broadcast_tx: tokio::sync::broadcast::Sender<String>,
 }
 
 impl AppState {
@@ -28,6 +29,7 @@ impl AppState {
         let start_time = chrono::Utc::now().timestamp();
         let total_messages_relayed = Arc::new(AtomicU64::new(0));
         let total_bytes_relayed = Arc::new(AtomicU64::new(0));
+        let (broadcast_tx, _) = tokio::sync::broadcast::channel(256);
 
         Self {
             db,
@@ -36,15 +38,31 @@ impl AppState {
             start_time,
             total_messages_relayed,
             total_bytes_relayed,
+            broadcast_tx,
         }
     }
 
+    pub fn emit_event(&self, event_json: &str) {
+        let _ = self.broadcast_tx.send(event_json.to_string());
+    }
+
     pub fn register_session(&self, username: String, tx: Tx) {
-        self.active_sessions.insert(username, tx);
+        self.active_sessions.insert(username.clone(), tx);
+        self.emit_event(&serde_json::json!({
+            "event": "session_connected",
+            "username": username,
+            "active_count": self.active_sessions_count(),
+        }).to_string());
     }
 
     pub fn unregister_session(&self, username: &str) {
-        self.active_sessions.remove(username);
+        if self.active_sessions.remove(username).is_some() {
+            self.emit_event(&serde_json::json!({
+                "event": "session_disconnected",
+                "username": username,
+                "active_count": self.active_sessions_count(),
+            }).to_string());
+        }
     }
 
     pub fn send_to_user(&self, recipient: &str, msg: Message) -> bool {
@@ -64,12 +82,26 @@ impl AppState {
     }
 
     pub fn disconnect_session(&self, username: &str) -> bool {
-        self.active_sessions.remove(username).is_some()
+        let removed = self.active_sessions.remove(username).is_some();
+        if removed {
+            self.emit_event(&serde_json::json!({
+                "event": "session_disconnected",
+                "username": username,
+                "active_count": self.active_sessions_count(),
+            }).to_string());
+        }
+        removed
     }
 
     pub fn record_traffic(&self, bytes: u64) {
-        self.total_messages_relayed.fetch_add(1, Ordering::Relaxed);
-        self.total_bytes_relayed.fetch_add(bytes, Ordering::Relaxed);
+        let total_msgs = self.total_messages_relayed.fetch_add(1, Ordering::Relaxed) + 1;
+        let total_bytes = self.total_bytes_relayed.fetch_add(bytes, Ordering::Relaxed) + bytes;
+
+        self.emit_event(&serde_json::json!({
+            "event": "traffic_recorded",
+            "total_messages": total_msgs,
+            "total_bytes": total_bytes,
+        }).to_string());
     }
 
     pub fn get_traffic_stats(&self) -> (u64, u64) {

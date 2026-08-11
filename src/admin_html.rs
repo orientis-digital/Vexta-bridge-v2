@@ -1143,6 +1143,42 @@ pub static ADMIN_HTML: &str = r#"<!DOCTYPE html>
             btn.innerHTML = '<span>⏹</span> Stop Refresh';
             showToast('Auto-refresh every 10s', 'info');
         }
+    // ── Realtime SSE Stream ──
+    let sseSource = null;
+
+    function connectSseStream(secret) {
+        if (sseSource) {
+            sseSource.close();
+        }
+        sseSource = new EventSource('/api/admin/events?token=' + encodeURIComponent(secret));
+        sseSource.onmessage = function(e) {
+            try {
+                const data = JSON.parse(e.data);
+                console.log('[Admin SSE] Live event:', data);
+                if (data.event === 'session_connected' || data.event === 'session_disconnected') {
+                    if (data.active_count !== undefined) {
+                        document.getElementById('statSessions').textContent = data.active_count;
+                        renderSessionList(data.active_count);
+                    }
+                    showToast(`⚡ Live event: Session ${data.event === 'session_connected' ? 'connected (' + data.username + ')' : 'disconnected (' + data.username + ')'}`, 'info');
+                } else if (data.event === 'traffic_recorded') {
+                    if (data.total_messages !== undefined) {
+                        document.getElementById('statQueued').textContent = data.total_messages;
+                    }
+                } else if (data.event === 'announcement_created') {
+                    fetchAnnouncements();
+                    showToast('⚡ Live event: New announcement broadcasted', 'info');
+                }
+                const bar = document.getElementById('lastUpdatedBar');
+                bar.style.display = 'flex';
+                document.getElementById('lastUpdatedText').textContent = '⚡ Realtime SSE Stream Active • ' + new Date().toLocaleTimeString();
+            } catch (err) {
+                console.warn('[Admin SSE] Parse error:', err);
+            }
+        };
+        sseSource.onerror = function() {
+            console.warn('[Admin SSE] Connection lost — reconnecting automatically...');
+        };
     }
 
     // ── Fetch All Data ──
@@ -1172,6 +1208,7 @@ pub static ADMIN_HTML: &str = r#"<!DOCTYPE html>
             document.getElementById('statAnnouncements').textContent = stats.total_announcements ?? 0;
 
             isAuthenticated = true;
+            connectSseStream(secret);
 
             // Users
             const resUsers = await fetch('/api/admin/users', { headers: { 'X-Admin-Secret': secret } });
