@@ -18,6 +18,20 @@ pub struct AdminStats {
     pub total_registered_devices: i64,
     pub total_announcements: i64,
     pub database_size_bytes: u64,
+    pub wal_size_bytes: u64,
+    pub provisioned_users: i64,
+    pub locked_users: i64,
+    pub users_with_vault: i64,
+    pub users_with_prekey: i64,
+    pub users_with_offline_msgs: i64,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct OfflineQueueSummary {
+    pub recipient: String,
+    pub message_count: i64,
+    pub oldest_timestamp: i64,
+    pub newest_timestamp: i64,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -221,13 +235,30 @@ impl DbManager {
         let total_queued_offline_messages: i64 = conn.query_row("SELECT COUNT(*) FROM offline_messages", [], |r| r.get(0)).unwrap_or(0);
         let total_registered_devices: i64 = conn.query_row("SELECT COUNT(*) FROM user_devices", [], |r| r.get(0)).unwrap_or(0);
         let total_announcements: i64 = conn.query_row("SELECT COUNT(*) FROM announcements", [], |r| r.get(0)).unwrap_or(0);
+        let provisioned_users: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE is_provisioned = 1", [], |r| r.get(0)).unwrap_or(0);
+        let now_ts = chrono::Utc::now().timestamp();
+        let locked_users: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE (locked_until IS NOT NULL AND locked_until > ?1) OR auth_attempts >= 5", params![now_ts], |r| r.get(0)).unwrap_or(0);
+        let users_with_vault: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE encrypted_vault IS NOT NULL AND LENGTH(encrypted_vault) > 0", [], |r| r.get(0)).unwrap_or(0);
+        let users_with_prekey: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE pre_key IS NOT NULL AND LENGTH(pre_key) > 0", [], |r| r.get(0)).unwrap_or(0);
+        let users_with_offline_msgs: i64 = conn.query_row("SELECT COUNT(DISTINCT recipient) FROM offline_messages", [], |r| r.get(0)).unwrap_or(0);
+
+        let db_path = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "vexta_bridge_v2.db".into());
+        let database_size_bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
+        let wal_path = format!("{}-wal", db_path);
+        let wal_size_bytes = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
 
         Ok(AdminStats {
             total_users,
             total_queued_offline_messages,
             total_registered_devices,
             total_announcements,
-            database_size_bytes: 0,
+            database_size_bytes,
+            wal_size_bytes,
+            provisioned_users,
+            locked_users,
+            users_with_vault,
+            users_with_prekey,
+            users_with_offline_msgs,
         })
     }
 
@@ -544,5 +575,49 @@ impl DbManager {
         )?;
 
         Ok(msgs)
+    }
+
+    pub fn get_offline_messages_summary(&self) -> Result<Vec<OfflineQueueSummary>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT recipient, COUNT(*) as msg_count, MIN(timestamp) as min_ts, MAX(timestamp) as max_ts
+             FROM offline_messages
+             GROUP BY recipient
+             ORDER BY msg_count DESC",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok(OfflineQueueSummary {
+                recipient: row.get(0)?,
+                message_count: row.get(1)?,
+                oldest_timestamp: row.get(2)?,
+                newest_timestamp: row.get(3)?,
+            })
+        })?;
+
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    }
+
+    pub fn unlock_user_account(&self, username: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let clean_username = clean_user(username);
+        conn.execute(
+            "UPDATE users SET auth_attempts = 0, locked_until = NULL WHERE LOWER(LTRIM(username, '@')) = ?1",
+            params![clean_username],
+        )?;
+        Ok(())
+    }
+
+    pub fn purge_stale_offline_messages(&self, older_than_timestamp: i64) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let deleted = conn.execute(
+            "DELETE FROM offline_messages WHERE timestamp < ?1",
+            params![older_than_timestamp],
+        )?;
+        Ok(deleted)
     }
 }

@@ -6,10 +6,10 @@ mod state;
 mod ws;
 
 use axum::{
-    extract::{Path, State},
+    extract::{ws::Message, Path, State},
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Json},
-    routing::{delete, get},
+    routing::{delete, get, post},
     Router,
 };
 use serde::Deserialize;
@@ -65,9 +65,15 @@ async fn main() {
         
         // Protected Admin REST APIs (Requires X-Admin-Secret Header)
         .route("/api/admin/stats", get(admin_stats_handler))
+        .route("/api/admin/sessions", get(admin_list_sessions_handler))
+        .route("/api/admin/sessions/:username", delete(admin_disconnect_session_handler))
         .route("/api/admin/users", get(admin_list_users_handler))
         .route("/api/admin/users/:username", delete(admin_delete_user_handler))
+        .route("/api/admin/users/:username/unlock", post(admin_unlock_user_handler))
         .route("/api/admin/devices", get(admin_list_devices_handler))
+        .route("/api/admin/devices/:username/:hardware_hash", delete(admin_revoke_device_handler))
+        .route("/api/admin/offline-messages/summary", get(admin_offline_messages_summary_handler))
+        .route("/api/admin/offline-messages/purge", post(admin_purge_offline_messages_handler))
         .route("/api/admin/announcements", get(admin_list_announcements_handler).post(admin_post_announcement_handler))
         .route("/api/admin/announcements/:id", delete(admin_delete_announcement_handler));
 
@@ -126,6 +132,8 @@ async fn admin_stats_handler(
 
     if let Ok(stats) = state.db.get_admin_stats() {
         let active_sessions = state.active_sessions_count();
+        let uptime_seconds = chrono::Utc::now().timestamp() - state.start_time;
+        let (total_msgs, total_bytes) = state.get_traffic_stats();
         return (
             StatusCode::OK,
             Json(json!({
@@ -134,11 +142,128 @@ async fn admin_stats_handler(
                 "total_queued_offline_messages": stats.total_queued_offline_messages,
                 "total_registered_devices": stats.total_registered_devices,
                 "total_announcements": stats.total_announcements,
+                "database_size_bytes": stats.database_size_bytes,
+                "wal_size_bytes": stats.wal_size_bytes,
+                "provisioned_users": stats.provisioned_users,
+                "locked_users": stats.locked_users,
+                "users_with_vault": stats.users_with_vault,
+                "users_with_prekey": stats.users_with_prekey,
+                "users_with_offline_msgs": stats.users_with_offline_msgs,
+                "total_messages_relayed": total_msgs,
+                "total_bytes_relayed": total_bytes,
+                "uptime_seconds": uptime_seconds,
+                "server_start_time": state.start_time,
             })),
         );
     }
 
     (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})))
+}
+
+// Admin List Active Sessions Handler
+async fn admin_list_sessions_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if !verify_admin_auth(&headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
+    }
+
+    let active_users = state.list_active_usernames();
+    (StatusCode::OK, Json(json!({ "active_sessions": active_users, "count": active_users.len() })))
+}
+
+// Admin Disconnect Session Handler
+async fn admin_disconnect_session_handler(
+    Path(username): Path<String>,
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if !verify_admin_auth(&headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
+    }
+
+    let disconnected = state.disconnect_session(&username);
+    info!("[Admin Console] Disconnected WS session for user '{}' (success: {})", username, disconnected);
+    (StatusCode::OK, Json(json!({ "success": true, "disconnected_username": username, "found": disconnected })))
+}
+
+// Admin Unlock User Handler
+async fn admin_unlock_user_handler(
+    Path(username): Path<String>,
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if !verify_admin_auth(&headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
+    }
+
+    if let Ok(_) = state.db.unlock_user_account(&username) {
+        info!("[Admin Console] Unlocked account '{}'", username);
+        return (StatusCode::OK, Json(json!({ "success": true, "unlocked_username": username })));
+    }
+
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})));
+}
+
+// Admin Revoke Device Handler
+async fn admin_revoke_device_handler(
+    Path((username, hardware_hash)): Path<(String, String)>,
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if !verify_admin_auth(&headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
+    }
+
+    if let Ok(_) = state.db.revoke_device(&username, &hardware_hash) {
+        info!("[Admin Console] Revoked device '{}' for user '{}'", hardware_hash, username);
+        return (StatusCode::OK, Json(json!({ "success": true, "revoked_device": hardware_hash, "username": username })));
+    }
+
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})));
+}
+
+// Admin Offline Messages Summary Handler
+async fn admin_offline_messages_summary_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if !verify_admin_auth(&headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
+    }
+
+    if let Ok(summary) = state.db.get_offline_messages_summary() {
+        return (StatusCode::OK, Json(serde_json::to_value(summary).unwrap()));
+    }
+
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})));
+}
+
+#[derive(Deserialize)]
+struct PurgeOfflineReq {
+    older_than_days: Option<i64>,
+}
+
+// Admin Purge Stale Offline Messages Handler
+async fn admin_purge_offline_messages_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    Json(payload): Json<PurgeOfflineReq>,
+) -> impl IntoResponse {
+    if !verify_admin_auth(&headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
+    }
+
+    let days = payload.older_than_days.unwrap_or(30);
+    let cutoff = chrono::Utc::now().timestamp() - (days * 86400);
+
+    if let Ok(deleted_count) = state.db.purge_stale_offline_messages(cutoff) {
+        info!("[Admin Console] Purged {} offline messages older than {} days", deleted_count, days);
+        return (StatusCode::OK, Json(json!({ "success": true, "deleted_count": deleted_count, "cutoff_days": days })));
+    }
+
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})));
 }
 
 // Admin List Users Handler
@@ -215,6 +340,27 @@ async fn admin_post_announcement_handler(
 
     if let Ok(id) = state.db.create_announcement(&payload.message) {
         info!("[Admin Console] Created broadcast announcement #{}", id);
+
+        // Broadcast announcement to all connected WebSocket sessions in real-time
+        let announcement_inner = json!({
+            "type": "system_broadcast",
+            "announcement": payload.message,
+            "id": id,
+        });
+
+        let broadcast_frame = json!({
+            "type": "message",
+            "sender": "Vexta - Global Message",
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+            "ciphertext": announcement_inner.to_string(),
+        });
+
+        let frame_str = broadcast_frame.to_string();
+        for item in state.active_sessions.iter() {
+            let tx = item.value();
+            let _ = tx.send(Message::Text(frame_str.clone()));
+        }
+
         return (StatusCode::OK, Json(json!({"success": true, "id": id})));
     }
 

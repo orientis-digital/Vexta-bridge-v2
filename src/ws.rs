@@ -238,6 +238,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                         };
 
                         let text_json = serde_json::to_string(&blind_frame).unwrap();
+                        state.record_traffic(text_json.len() as u64);
 
                         let delivered = state.send_to_user(&clean_recipient, Message::Text(text_json));
                         if !delivered {

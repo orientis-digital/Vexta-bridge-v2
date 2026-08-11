@@ -18,14 +18,69 @@ import {
   Info,
   Radio,
   KeyRound,
-  ArrowRight
+  ArrowRight,
+  Database,
+  Server,
+  Clock,
+  Unlock,
+  Wifi,
+  Power,
+  Layers,
+  HardDrive,
+  LayoutDashboard,
+  PieChart,
+  TrendingUp,
+  ArrowUpRight,
+  Sparkles,
+  Eye,
+  Edit3,
+  Copy,
+  Filter,
+  AlertTriangle,
+  Check,
+  Share2
 } from 'lucide-react';
+
+// Format bytes into human-readable MB / KB
+function formatBytes(bytes) {
+  if (!bytes || bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+// Format seconds into digital uptime string (e.g. 2h 15m 4s)
+function formatUptime(seconds) {
+  if (!seconds || seconds < 0) return '0s';
+  const hrs = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  if (hrs > 0) return `${hrs}h ${mins}m ${secs}s`;
+  if (mins > 0) return `${mins}m ${secs}s`;
+  return `${secs}s`;
+}
+
+// Category badge generator for announcements
+function getAnnouncementBadge(text) {
+  if (!text) return <span className="chip chip-green"><Info size={11} /> General Notice</span>;
+  const lower = text.toLowerCase();
+  if (text.includes('[EMERGENCY]') || lower.includes('🚨') || lower.includes('emergency') || lower.includes('outage')) {
+    return <span className="chip chip-red"><AlertTriangle size={11} /> Emergency Outage</span>;
+  }
+  if (text.includes('[MAINTENANCE]') || lower.includes('🔧') || lower.includes('maintenance') || lower.includes('scheduled')) {
+    return <span className="chip chip-amber"><AlertCircle size={11} /> Maintenance</span>;
+  }
+  if (text.includes('[UPDATE]') || lower.includes('🚀') || lower.includes('upgrade') || lower.includes('feature')) {
+    return <span className="chip chip-blue"><Sparkles size={11} /> Feature Update</span>;
+  }
+  return <span className="chip chip-green"><Info size={11} /> General Notice</span>;
+}
 
 // Lightweight Markdown Renderer Component
 function MarkdownMessage({ content }) {
   if (!content) return null;
 
-  // Process code blocks first
   const parts = content.split(/(```[\s\S]*?```)/g);
 
   return (
@@ -43,7 +98,6 @@ function MarkdownMessage({ content }) {
           );
         }
 
-        // Process line by line for headers, lists, paragraphs
         const lines = part.split('\n');
         return (
           <React.Fragment key={index}>
@@ -51,7 +105,6 @@ function MarkdownMessage({ content }) {
               const trimmed = line.trim();
               if (!trimmed) return <div key={lineIdx} style={{ height: 6 }} />;
 
-              // Headers
               if (trimmed.startsWith('### ')) {
                 return <h4 key={lineIdx} className="md-h3">{formatInline(trimmed.slice(4))}</h4>;
               }
@@ -62,7 +115,6 @@ function MarkdownMessage({ content }) {
                 return <h2 key={lineIdx} className="md-h1">{formatInline(trimmed.slice(2))}</h2>;
               }
 
-              // Bullet lists
               if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
                 return (
                   <div key={lineIdx} className="md-list-item">
@@ -81,11 +133,9 @@ function MarkdownMessage({ content }) {
   );
 }
 
-// Inline formatting helper for bold, italic, code, links
+// Inline formatting helper
 function formatInline(text) {
   if (!text) return '';
-
-  // Regex patterns
   const tokenRegex = /(\*\*.*?\*\*|__.*?__|`.*?`|\[.*?\]\(.*?\))/g;
   const parts = text.split(tokenRegex);
 
@@ -126,24 +176,42 @@ export default function App() {
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [loginError, setLoginError] = useState('');
 
-  const [activeTab, setActiveTab] = useState('users');
+  const [activeTab, setActiveTab] = useState('overview');
   const [searchQuery, setSearchQuery] = useState('');
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [refreshCountdown, setRefreshCountdown] = useState(10);
   const [lastUpdated, setLastUpdated] = useState(null);
 
-  // Telemetry & Data States (Strictly loaded from backend)
+  // Expanded Telemetry & Traffic Data States
   const [stats, setStats] = useState({
     active_ws_sessions: 0,
     total_users: 0,
     total_queued_offline_messages: 0,
     total_registered_devices: 0,
     total_announcements: 0,
+    database_size_bytes: 0,
+    wal_size_bytes: 0,
+    provisioned_users: 0,
+    locked_users: 0,
+    users_with_vault: 0,
+    users_with_prekey: 0,
+    users_with_offline_msgs: 0,
+    total_messages_relayed: 0,
+    total_bytes_relayed: 0,
+    uptime_seconds: 0,
   });
+
   const [users, setUsers] = useState([]);
   const [devices, setDevices] = useState([]);
   const [announcements, setAnnouncements] = useState([]);
+  const [sessions, setSessions] = useState([]);
+  const [offlineSummary, setOfflineSummary] = useState([]);
+
+  // Enhanced Announcement Composer States
   const [newAnnouncementText, setNewAnnouncementText] = useState('');
+  const [announcementCategory, setAnnouncementCategory] = useState('INFO');
+  const [announcementComposerTab, setAnnouncementComposerTab] = useState('edit');
+  const [announcementFilter, setAnnouncementFilter] = useState('ALL');
 
   // UI Toast State
   const [toast, setToast] = useState(null);
@@ -199,6 +267,20 @@ export default function App() {
       if (resAnnouncements.ok) {
         const annData = await resAnnouncements.json();
         setAnnouncements(annData);
+      }
+
+      // 5. Active Sessions REST API
+      const resSessions = await fetch('/api/admin/sessions', { headers });
+      if (resSessions.ok) {
+        const sessionData = await resSessions.json();
+        setSessions(sessionData.active_sessions || []);
+      }
+
+      // 6. Offline Messages Summary REST API
+      const resOffline = await fetch('/api/admin/offline-messages/summary', { headers });
+      if (resOffline.ok) {
+        const offlineData = await resOffline.json();
+        setOfflineSummary(offlineData);
       }
 
       setLastUpdated(new Date().toLocaleTimeString());
@@ -266,7 +348,7 @@ export default function App() {
     };
   }, [autoRefresh, isAuthenticated, fetchData]);
 
-  // Action: Delete user (Real REST call)
+  // Action: Delete user
   const handleDeleteUser = async (username) => {
     if (!window.confirm(`Are you sure you want to delete user "${username}"?`)) return;
     try {
@@ -285,13 +367,100 @@ export default function App() {
     }
   };
 
-  // Action: Post announcement (Real REST call)
+  // Action: Unlock User Account
+  const handleUnlockUser = async (username) => {
+    try {
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(username)}/unlock`, {
+        method: 'POST',
+        headers: { 'x-admin-secret': secretKey },
+      });
+      if (res.ok) {
+        showToast(`Account @${username} unlocked successfully!`, 'success');
+        fetchData();
+      } else {
+        showToast(`Failed to unlock account @${username}`, 'error');
+      }
+    } catch (err) {
+      showToast('Error unlocking user account', 'error');
+    }
+  };
+
+  // Action: Disconnect Live WS Session
+  const handleDisconnectSession = async (username) => {
+    if (!window.confirm(`Force disconnect active WebSocket connection for @${username}?`)) return;
+    try {
+      const res = await fetch(`/api/admin/sessions/${encodeURIComponent(username)}`, {
+        method: 'DELETE',
+        headers: { 'x-admin-secret': secretKey },
+      });
+      if (res.ok) {
+        showToast(`WebSocket connection for @${username} terminated`, 'info');
+        fetchData();
+      } else {
+        showToast(`Failed to disconnect @${username}`, 'error');
+      }
+    } catch (err) {
+      showToast('Error terminating WebSocket session', 'error');
+    }
+  };
+
+  // Action: Revoke Device
+  const handleRevokeDevice = async (username, hardware_hash) => {
+    if (!window.confirm(`Revoke device registration '${hardware_hash}' for user @${username}?`)) return;
+    try {
+      const res = await fetch(`/api/admin/devices/${encodeURIComponent(username)}/${encodeURIComponent(hardware_hash)}`, {
+        method: 'DELETE',
+        headers: { 'x-admin-secret': secretKey },
+      });
+      if (res.ok) {
+        showToast(`Device '${hardware_hash}' revoked from @${username}`, 'success');
+        fetchData();
+      } else {
+        showToast('Failed to revoke device', 'error');
+      }
+    } catch (err) {
+      showToast('Error revoking device', 'error');
+    }
+  };
+
+  // Action: Purge Stale Offline Messages
+  const handlePurgeStaleOfflineMsgs = async (days = 30) => {
+    if (!window.confirm(`Purge all queued offline messages older than ${days} days?`)) return;
+    try {
+      const res = await fetch('/api/admin/offline-messages/purge', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-secret': secretKey,
+        },
+        body: JSON.stringify({ older_than_days: days }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        showToast(`Purged ${data.deleted_count || 0} offline messages older than ${days} days!`, 'success');
+        fetchData();
+      } else {
+        showToast('Failed to purge offline messages', 'error');
+      }
+    } catch (err) {
+      showToast('Error purging offline messages', 'error');
+    }
+  };
+
+  // Action: Post announcement with category tag prefix
   const handlePostAnnouncement = async (textToPost) => {
-    const text = textToPost || newAnnouncementText;
-    if (!text.trim()) {
+    let rawText = textToPost || newAnnouncementText;
+    if (!rawText.trim()) {
       showToast('Announcement message cannot be empty', 'error');
       return;
     }
+
+    // Attach category prefix if not already present
+    let textWithTag = rawText.trim();
+    if (!textWithTag.startsWith('[')) {
+      textWithTag = `[${announcementCategory}] ${textWithTag}`;
+    }
+
     try {
       const res = await fetch('/api/admin/announcements', {
         method: 'POST',
@@ -299,7 +468,7 @@ export default function App() {
           'Content-Type': 'application/json',
           'x-admin-secret': secretKey,
         },
-        body: JSON.stringify({ message: text.trim() }),
+        body: JSON.stringify({ message: textWithTag }),
       });
       if (res.ok) {
         showToast('Broadcast announcement published!', 'success');
@@ -313,7 +482,7 @@ export default function App() {
     }
   };
 
-  // Action: Delete announcement (Real REST call)
+  // Action: Delete announcement
   const handleDeleteAnnouncement = async (id) => {
     try {
       const res = await fetch(`/api/admin/announcements/${id}`, {
@@ -329,6 +498,11 @@ export default function App() {
     } catch (err) {
       showToast('Error deleting announcement', 'error');
     }
+  };
+
+  // Formatting helpers for rich markdown toolbar
+  const handleFormatInsert = (prefix, suffix = '') => {
+    setNewAnnouncementText((prev) => `${prev}${prefix}${suffix}`);
   };
 
   // Filtered user search
@@ -349,9 +523,30 @@ export default function App() {
     return devices.filter(
       (d) =>
         (d.username && d.username.toLowerCase().includes(q)) ||
-        (d.device_id && d.device_id.toLowerCase().includes(q))
+        (d.device_id && d.device_id.toLowerCase().includes(q)) ||
+        (d.hardware_hash && d.hardware_hash.toLowerCase().includes(q))
     );
   }, [devices, searchQuery]);
+
+  // Filtered sessions search
+  const filteredSessions = useMemo(() => {
+    if (!searchQuery.trim()) return sessions;
+    const q = searchQuery.toLowerCase();
+    return sessions.filter((s) => s.toLowerCase().includes(q));
+  }, [sessions, searchQuery]);
+
+  // Filtered announcements
+  const filteredAnnouncements = useMemo(() => {
+    return announcements.filter((ann) => {
+      if (announcementFilter === 'ALL') return true;
+      const lower = ann.message.toLowerCase();
+      if (announcementFilter === 'EMERGENCY') return ann.message.includes('[EMERGENCY]') || lower.includes('emergency') || lower.includes('outage');
+      if (announcementFilter === 'MAINTENANCE') return ann.message.includes('[MAINTENANCE]') || lower.includes('maintenance');
+      if (announcementFilter === 'UPDATE') return ann.message.includes('[UPDATE]') || lower.includes('upgrade') || lower.includes('feature');
+      if (announcementFilter === 'INFO') return ann.message.includes('[INFO]') || (!ann.message.includes('[EMERGENCY]') && !ann.message.includes('[MAINTENANCE]') && !ann.message.includes('[UPDATE]'));
+      return true;
+    });
+  }, [announcements, announcementFilter]);
 
   // Render Dedicated Login Screen if unauthenticated
   if (!isAuthenticated) {
@@ -435,10 +630,14 @@ export default function App() {
     );
   }
 
-  // Render Full Admin Dashboard when Authenticated
+  // Calculate percentages for Overview widgets
+  const provisionedPercent = stats.total_users ? Math.round((stats.provisioned_users / stats.total_users) * 100) : 0;
+  const trafficSpeed = stats.uptime_seconds > 0 ? (stats.total_bytes_relayed / stats.uptime_seconds).toFixed(1) : 0;
+
+  // Render Full Admin Dashboard with Header, Sidebar, and Main Content Area
   return (
     <div className="shell">
-      {/* ── Top Navigation Bar ── */}
+      {/* ── 1. Top Header ── */}
       <header className="topbar">
         <div className="brand">
           <div className="brand-icon">
@@ -448,7 +647,7 @@ export default function App() {
             <div className="brand-name">
               <span>VEXTA</span> BRIDGE V2
             </div>
-            <div className="brand-sub">REACT ADMIN CONSOLE</div>
+            <div className="brand-sub">ENTERPRISE MANAGEMENT CONSOLE</div>
           </div>
           <div className="status-badge">
             <span className="status-dot"></span> ONLINE
@@ -483,329 +682,1143 @@ export default function App() {
         </div>
       </header>
 
-      {/* ── Main Workspace ── */}
-      <main className="main">
-        {/* Telemetry Stat Cards */}
-        <div className="stats-grid">
-          <div className="stat-card green">
-            <div className="stat-header">
-              <div className="stat-icon green">
-                <Activity size={20} />
+      {/* ── 2. Layout Container (Sidebar + Main Content Area) ── */}
+      <div className="layout-container">
+        {/* Left Sidebar */}
+        <aside className="sidebar">
+          <div className="sidebar-menu">
+            <div className="sidebar-label">Navigation</div>
+
+            <button
+              className={`sidebar-btn ${activeTab === 'overview' ? 'active' : ''}`}
+              onClick={() => setActiveTab('overview')}
+            >
+              <div className="sidebar-btn-content">
+                <LayoutDashboard size={16} />
+                <span>Overview</span>
               </div>
-            </div>
-            <div className="stat-label">Live WS Sessions</div>
-            <div className="stat-value green">{stats.active_ws_sessions}</div>
-            <div className="stat-sub">Active connections</div>
+              <Sparkles size={12} style={{ color: 'var(--accent)' }} />
+            </button>
+
+            <button
+              className={`sidebar-btn ${activeTab === 'users' ? 'active' : ''}`}
+              onClick={() => setActiveTab('users')}
+            >
+              <div className="sidebar-btn-content">
+                <Users size={16} />
+                <span>User Accounts</span>
+              </div>
+              <span className="sidebar-count">{users.length}</span>
+            </button>
+
+            <button
+              className={`sidebar-btn ${activeTab === 'sessions' ? 'active' : ''}`}
+              onClick={() => setActiveTab('sessions')}
+            >
+              <div className="sidebar-btn-content">
+                <Wifi size={16} />
+                <span>Live WS Sessions</span>
+              </div>
+              <span className="sidebar-count">{sessions.length}</span>
+            </button>
+
+            <button
+              className={`sidebar-btn ${activeTab === 'offline' ? 'active' : ''}`}
+              onClick={() => setActiveTab('offline')}
+            >
+              <div className="sidebar-btn-content">
+                <MessageSquare size={16} />
+                <span>Offline Queues</span>
+              </div>
+              <span className="sidebar-count">{offlineSummary.length}</span>
+            </button>
+
+            <button
+              className={`sidebar-btn ${activeTab === 'devices' ? 'active' : ''}`}
+              onClick={() => setActiveTab('devices')}
+            >
+              <div className="sidebar-btn-content">
+                <Smartphone size={16} />
+                <span>Devices</span>
+              </div>
+              <span className="sidebar-count">{devices.length}</span>
+            </button>
+
+            <button
+              className={`sidebar-btn ${activeTab === 'announcements' ? 'active' : ''}`}
+              onClick={() => setActiveTab('announcements')}
+            >
+              <div className="sidebar-btn-content">
+                <Megaphone size={16} />
+                <span>Announcements</span>
+              </div>
+              <span className="sidebar-count">{announcements.length}</span>
+            </button>
+
+            <div className="sidebar-label" style={{ marginTop: 12 }}>Telemetry</div>
+
+            <button
+              className={`sidebar-btn ${activeTab === 'health' ? 'active' : ''}`}
+              onClick={() => setActiveTab('health')}
+            >
+              <div className="sidebar-btn-content">
+                <HardDrive size={16} />
+                <span>Storage & Health</span>
+              </div>
+            </button>
           </div>
 
-          <div className="stat-card blue">
-            <div className="stat-header">
-              <div className="stat-icon blue">
-                <Users size={20} />
-              </div>
+          {/* Sidebar Footer Engine Summary */}
+          <div className="sidebar-footer">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-2)' }}>
+              <Server size={14} style={{ color: 'var(--accent)' }} />
+              <strong>Rust Engine Status</strong>
             </div>
-            <div className="stat-label">Registered Accounts</div>
-            <div className="stat-value blue">{stats.total_users}</div>
-            <div className="stat-sub">Total users in DB</div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+              Uptime: <span style={{ color: 'var(--text-1)', fontFamily: 'IBM Plex Mono, monospace' }}>{formatUptime(stats.uptime_seconds)}</span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+              SQLite Size: <span style={{ color: 'var(--text-1)', fontFamily: 'IBM Plex Mono, monospace' }}>{formatBytes(stats.database_size_bytes)}</span>
+            </div>
           </div>
+        </aside>
 
-          <div className="stat-card amber">
-            <div className="stat-header">
-              <div className="stat-icon amber">
-                <MessageSquare size={20} />
+        {/* ── 3. Main Content Area ── */}
+        <main className="main-content">
+          {/* Telemetry Stat Cards Grid — Rendered ONLY on Overview Page */}
+          {activeTab === 'overview' && (
+            <div className="stats-grid">
+              {/* WS Sessions Card */}
+              <div className="stat-card green">
+                <div className="stat-header">
+                  <div className="stat-icon green">
+                    <Activity size={20} />
+                  </div>
+                </div>
+                <div className="stat-label">Live WS Sessions</div>
+                <div className="stat-value green">{stats.active_ws_sessions}</div>
+                <div className="stat-sub">Active connections</div>
+              </div>
+
+              {/* User Accounts Card */}
+              <div className="stat-card blue">
+                <div className="stat-header">
+                  <div className="stat-icon blue">
+                    <Users size={20} />
+                  </div>
+                </div>
+                <div className="stat-label">Registered Accounts</div>
+                <div className="stat-value blue">{stats.total_users}</div>
+                <div className="stat-sub">
+                  {stats.provisioned_users || 0} provisioned ({provisionedPercent}%)
+                </div>
+              </div>
+
+              {/* Queued Offline Messages Card */}
+              <div className="stat-card amber">
+                <div className="stat-header">
+                  <div className="stat-icon amber">
+                    <MessageSquare size={20} />
+                  </div>
+                </div>
+                <div className="stat-label">Queued Offline Msgs</div>
+                <div className="stat-value amber">{stats.total_queued_offline_messages}</div>
+                <div className="stat-sub">Across {stats.users_with_offline_msgs || 0} recipient queues</div>
+              </div>
+
+              {/* Traffic Statistics Card */}
+              <div className="stat-card green">
+                <div className="stat-header">
+                  <div className="stat-icon green">
+                    <TrendingUp size={20} />
+                  </div>
+                </div>
+                <div className="stat-label">Relayed Traffic</div>
+                <div className="stat-value green">{stats.total_messages_relayed || 0}</div>
+                <div className="stat-sub">
+                  {formatBytes(stats.total_bytes_relayed)} total payload
+                </div>
+              </div>
+
+              {/* Database & Storage Telemetry Card */}
+              <div className="stat-card slate">
+                <div className="stat-header">
+                  <div className="stat-icon slate">
+                    <Database size={20} />
+                  </div>
+                </div>
+                <div className="stat-label">SQLite Database Size</div>
+                <div className="stat-value slate">{formatBytes(stats.database_size_bytes)}</div>
+                <div className="stat-sub">
+                  WAL size: {formatBytes(stats.wal_size_bytes)}
+                </div>
+              </div>
+
+              {/* Registered Devices Card */}
+              <div className="stat-card purple">
+                <div className="stat-header">
+                  <div className="stat-icon purple">
+                    <Smartphone size={20} />
+                  </div>
+                </div>
+                <div className="stat-label">Registered Devices</div>
+                <div className="stat-value purple">{stats.total_registered_devices}</div>
+                <div className="stat-sub">Active device tokens</div>
               </div>
             </div>
-            <div className="stat-label">Queued Offline Msgs</div>
-            <div className="stat-value amber">{stats.total_queued_offline_messages}</div>
-            <div className="stat-sub">Pending delivery</div>
-          </div>
+          )}
 
-          <div className="stat-card purple">
-            <div className="stat-header">
-              <div className="stat-icon purple">
-                <Smartphone size={20} />
+          {/* ── Active Panel Container ── */}
+          <div className="panel">
+            {/* Panel Header & Controls */}
+            <div className="panel-header">
+              <div className="panel-title">
+                <div className="panel-title-icon">
+                  {activeTab === 'overview' && <LayoutDashboard size={16} />}
+                  {activeTab === 'users' && <Users size={16} />}
+                  {activeTab === 'sessions' && <Wifi size={16} />}
+                  {activeTab === 'offline' && <MessageSquare size={16} />}
+                  {activeTab === 'devices' && <Smartphone size={16} />}
+                  {activeTab === 'announcements' && <Megaphone size={16} />}
+                  {activeTab === 'health' && <HardDrive size={16} />}
+                </div>
+                <span>
+                  {activeTab === 'overview' && 'System Overview & Real-Time Relay Telemetry'}
+                  {activeTab === 'users' && 'Account Registry & Cryptographic Identity'}
+                  {activeTab === 'sessions' && 'Active WebSocket Relay Sessions (In-Memory Routing)'}
+                  {activeTab === 'offline' && 'Offline Message Queue Breakdown (Store-and-Forward)'}
+                  {activeTab === 'devices' && 'Push Devices & Hardware Registrations'}
+                  {activeTab === 'announcements' && 'Broadcast Announcement Center & Interactive Composer'}
+                  {activeTab === 'health' && 'SQLite WAL Storage & Server Process Telemetry'}
+                </span>
+              </div>
+
+              <div className="panel-actions">
+                {(activeTab === 'users' || activeTab === 'devices' || activeTab === 'sessions') && (
+                  <div className="search-wrap">
+                    <Search className="search-icon" size={14} />
+                    <input
+                      type="text"
+                      placeholder="Search username or key..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                    />
+                  </div>
+                )}
+
+                {activeTab === 'offline' && (
+                  <button
+                    className="btn-warning"
+                    onClick={() => handlePurgeStaleOfflineMsgs(30)}
+                  >
+                    <Trash2 size={13} /> Purge Stale Msgs (&gt;30 Days)
+                  </button>
+                )}
               </div>
             </div>
-            <div className="stat-label">Registered Devices</div>
-            <div className="stat-value purple">{stats.total_registered_devices}</div>
-            <div className="stat-sub">Across all accounts</div>
-          </div>
 
-          <div className="stat-card amber">
-            <div className="stat-header">
-              <div className="stat-icon amber">
-                <Megaphone size={20} />
-              </div>
-            </div>
-            <div className="stat-label">Active Broadcasts</div>
-            <div className="stat-value amber">{stats.total_announcements}</div>
-            <div className="stat-sub">System notices</div>
-          </div>
-        </div>
+            <div className="panel-body">
+              {/* 0. OVERVIEW TAB */}
+              {activeTab === 'overview' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+                  {/* System Status Banner */}
+                  <div
+                    style={{
+                      background: 'linear-gradient(135deg, rgba(57, 255, 20, 0.08) 0%, rgba(59, 130, 246, 0.08) 100%)',
+                      border: '1px solid var(--accent-border)',
+                      borderRadius: 'var(--radius-lg)',
+                      padding: '24px 28px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      flexWrap: 'wrap',
+                      gap: 20,
+                    }}
+                  >
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+                        <h2 style={{ fontSize: 20, fontWeight: 700, letterSpacing: '-0.5px' }}>
+                          Vexta Bridge Kernel Operational
+                        </h2>
+                        <span className="chip chip-green">
+                          <Activity size={12} /> &lt; 0.2ms Routing
+                        </span>
+                      </div>
+                      <p style={{ color: 'var(--text-2)', fontSize: 13 }}>
+                        Zero-trust, blind store-and-forward relay node powered by Rust + Axum 0.7 + SQLite WAL mode.
+                      </p>
+                    </div>
 
-        {/* Tab Selection Bar */}
-        <div className="tabs">
-          <button
-            className={`tab-btn ${activeTab === 'users' ? 'active' : ''}`}
-            onClick={() => setActiveTab('users')}
-          >
-            <Users size={15} /> User Accounts
-            <span className="tab-count">{users.length}</span>
-          </button>
-          <button
-            className={`tab-btn ${activeTab === 'devices' ? 'active' : ''}`}
-            onClick={() => setActiveTab('devices')}
-          >
-            <Smartphone size={15} /> Registered Devices
-            <span className="tab-count">{devices.length}</span>
-          </button>
-          <button
-            className={`tab-btn ${activeTab === 'announcements' ? 'active' : ''}`}
-            onClick={() => setActiveTab('announcements')}
-          >
-            <Megaphone size={15} /> Announcements
-            <span className="tab-count">{announcements.length}</span>
-          </button>
-        </div>
+                    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                      <button className="btn-secondary" onClick={() => setActiveTab('sessions')}>
+                        <Wifi size={14} /> View {sessions.length} Active Sessions
+                      </button>
+                      <button className="btn-primary" onClick={() => setActiveTab('announcements')}>
+                        <Megaphone size={14} /> Post Announcement
+                      </button>
+                    </div>
+                  </div>
 
-        {/* ── Tab Content Panels ── */}
-        <div className="panel">
-          {/* Panel Header & Controls */}
-          <div className="panel-header">
-            <div className="panel-title">
-              <div className="panel-title-icon">
-                {activeTab === 'users' && <Users size={16} />}
-                {activeTab === 'devices' && <Smartphone size={16} />}
-                {activeTab === 'announcements' && <Megaphone size={16} />}
-              </div>
-              <span>
-                {activeTab === 'users' && 'Account Registry & Public Keys'}
-                {activeTab === 'devices' && 'Push Devices & Token Registrations'}
-                {activeTab === 'announcements' && 'System Announcements & Broadcasts'}
-              </span>
-            </div>
+                  {/* Operational Ratios & Traffic Grid */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 20 }}>
+                    {/* Traffic & Throughput Widget */}
+                    <div className="panel" style={{ background: 'var(--surface-2)' }}>
+                      <div className="panel-header">
+                        <div className="panel-title">
+                          <TrendingUp size={16} /> Relay Traffic & Throughput
+                        </div>
+                      </div>
+                      <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+                          <span style={{ color: 'var(--text-2)' }}>Messages Relayed</span>
+                          <strong style={{ color: 'var(--accent)', fontFamily: 'IBM Plex Mono, monospace' }}>
+                            {stats.total_messages_relayed || 0} msgs
+                          </strong>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+                          <span style={{ color: 'var(--text-2)' }}>Total Data Transferred</span>
+                          <strong style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
+                            {formatBytes(stats.total_bytes_relayed)}
+                          </strong>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-3)' }}>
+                          <span>Avg Speed: {trafficSpeed} B/s</span>
+                          <span>Server Uptime: {formatUptime(stats.uptime_seconds)}</span>
+                        </div>
+                      </div>
+                    </div>
 
-            <div className="panel-actions">
-              {(activeTab === 'users' || activeTab === 'devices') && (
-                <div className="search-wrap">
-                  <Search className="search-icon" size={14} />
-                  <input
-                    type="text"
-                    placeholder="Search username or key..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                  />
+                    {/* User Provisioning Widget */}
+                    <div className="panel" style={{ background: 'var(--surface-2)' }}>
+                      <div className="panel-header">
+                        <div className="panel-title">
+                          <Shield size={16} /> User Provisioning Status
+                        </div>
+                      </div>
+                      <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+                          <span style={{ color: 'var(--text-2)' }}>Provisioned Roster Ratio</span>
+                          <strong>{stats.provisioned_users || 0} / {stats.total_users || 0} ({provisionedPercent}%)</strong>
+                        </div>
+                        {/* Progress Bar */}
+                        <div style={{ height: 8, background: 'var(--surface-3)', borderRadius: 4, overflow: 'hidden' }}>
+                          <div
+                            style={{
+                              width: `${provisionedPercent}%`,
+                              height: '100%',
+                              background: 'var(--accent)',
+                              transition: 'width 0.4s ease',
+                            }}
+                          />
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-3)' }}>
+                          <span>Vault Backups: {stats.users_with_vault || 0}</span>
+                          <span>Pre-key Bundles: {stats.users_with_prekey || 0}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Offline Queue Ratio Widget */}
+                    <div className="panel" style={{ background: 'var(--surface-2)' }}>
+                      <div className="panel-header">
+                        <div className="panel-title">
+                          <MessageSquare size={16} /> Store-and-Forward Queue Health
+                        </div>
+                      </div>
+                      <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+                          <span style={{ color: 'var(--text-2)' }}>Pending Offline Ciphertexts</span>
+                          <strong style={{ color: 'var(--amber)' }}>{stats.total_queued_offline_messages || 0} msgs</strong>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-3)' }}>
+                          <span>Active Queued Recipients: {stats.users_with_offline_msgs || 0}</span>
+                          <span
+                            style={{ color: 'var(--accent)', cursor: 'pointer' }}
+                            onClick={() => setActiveTab('offline')}
+                          >
+                            Inspect Queues &rarr;
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Active Sessions & Recent Announcements Quick Preview */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: 20 }}>
+                    {/* Active WS Sessions Preview */}
+                    <div className="panel" style={{ background: 'var(--surface-2)' }}>
+                      <div className="panel-header">
+                        <div className="panel-title">
+                          <Wifi size={16} /> Connected Relay Routers ({sessions.length})
+                        </div>
+                        <button className="btn-ghost" onClick={() => setActiveTab('sessions')} style={{ padding: '4px 8px', fontSize: 11 }}>
+                          View All <ArrowUpRight size={12} />
+                        </button>
+                      </div>
+                      <div className="panel-body">
+                        {sessions.length === 0 ? (
+                          <div style={{ color: 'var(--text-3)', fontSize: 12, textAlign: 'center', padding: 20 }}>
+                            No active WebSocket sessions connected right now.
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                            {sessions.slice(0, 5).map((u) => (
+                              <div
+                                key={u}
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'space-between',
+                                  padding: '8px 12px',
+                                  background: 'var(--surface-3)',
+                                  borderRadius: 'var(--radius-sm)',
+                                  border: '1px solid var(--panel-border)',
+                                }}
+                              >
+                                <span style={{ fontFamily: 'IBM Plex Mono, monospace', fontSize: 12, color: 'var(--accent)' }}>
+                                  @{u}
+                                </span>
+                                <button
+                                  className="btn-danger"
+                                  onClick={() => handleDisconnectSession(u)}
+                                  style={{ padding: '2px 8px', fontSize: 11 }}
+                                >
+                                  Disconnect
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Recent System Announcements Preview */}
+                    <div className="panel" style={{ background: 'var(--surface-2)' }}>
+                      <div className="panel-header">
+                        <div className="panel-title">
+                          <Megaphone size={16} /> Broadcast Notices ({announcements.length})
+                        </div>
+                        <button className="btn-ghost" onClick={() => setActiveTab('announcements')} style={{ padding: '4px 8px', fontSize: 11 }}>
+                          Manage <ArrowUpRight size={12} />
+                        </button>
+                      </div>
+                      <div className="panel-body">
+                        {announcements.length === 0 ? (
+                          <div style={{ color: 'var(--text-3)', fontSize: 12, textAlign: 'center', padding: 20 }}>
+                            No system announcements posted yet.
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            {announcements.slice(0, 3).map((ann) => (
+                              <div
+                                key={ann.id}
+                                style={{
+                                  padding: '10px 12px',
+                                  background: 'var(--surface-3)',
+                                  borderRadius: 'var(--radius-sm)',
+                                  border: '1px solid var(--panel-border)',
+                                  fontSize: 12,
+                                }}
+                              >
+                                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, color: 'var(--text-3)', fontSize: 11 }}>
+                                  {getAnnouncementBadge(ann.message)}
+                                  <span>{ann.created_at ? new Date(ann.created_at * 1000).toLocaleTimeString() : ''}</span>
+                                </div>
+                                <div style={{ color: 'var(--text-1)' }}>
+                                  <MarkdownMessage content={ann.message} />
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* 1. USERS TAB */}
+              {activeTab === 'users' && (
+                <div className="table-wrap">
+                  {filteredUsers.length === 0 ? (
+                    <div className="empty-state">
+                      <Users className="empty-state-icon" />
+                      <div className="empty-state-text">No user accounts found</div>
+                      <div className="empty-state-sub">
+                        {searchQuery ? 'Try adjusting your search query' : 'Registered user accounts will appear here'}
+                      </div>
+                    </div>
+                  ) : (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Username</th>
+                          <th>Ed25519 Public Key</th>
+                          <th>Status Badges</th>
+                          <th>Created At</th>
+                          <th style={{ textAlign: 'right' }}>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredUsers.map((user) => {
+                          const isLocked = (user.locked_until && user.locked_until > Math.floor(Date.now() / 1000)) || user.auth_attempts >= 5;
+                          return (
+                            <tr key={user.username}>
+                              <td className="user-cell">@{user.username}</td>
+                              <td>
+                                <div
+                                  className="pubkey-cell"
+                                  title={user.ed25519_pubkey}
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(user.ed25519_pubkey);
+                                    showToast(`Public key for @${user.username} copied!`, 'success');
+                                  }}
+                                >
+                                  <Key size={12} style={{ display: 'inline', marginRight: 4 }} />
+                                  {user.ed25519_pubkey || '—'}
+                                </div>
+                              </td>
+                              <td>
+                                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                  {user.is_provisioned ? (
+                                    <span className="chip chip-green">Provisioned</span>
+                                  ) : (
+                                    <span className="chip chip-slate">Unprovisioned</span>
+                                  )}
+                                  {user.encrypted_vault && (
+                                    <span className="chip chip-blue">Vault</span>
+                                  )}
+                                  {user.pre_key && (
+                                    <span className="chip chip-purple">Pre-key</span>
+                                  )}
+                                  {isLocked && (
+                                    <span className="chip chip-red">Locked ({user.auth_attempts} attempts)</span>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="td-muted">
+                                {user.created_at
+                                  ? new Date(user.created_at * 1000).toLocaleString()
+                                  : '—'}
+                              </td>
+                              <td style={{ textAlign: 'right' }}>
+                                <div style={{ display: 'inline-flex', gap: 6 }}>
+                                  {isLocked && (
+                                    <button
+                                      className="btn-warning"
+                                      onClick={() => handleUnlockUser(user.username)}
+                                      title="Clear auth attempts and unlock account"
+                                    >
+                                      <Unlock size={13} /> Unlock
+                                    </button>
+                                  )}
+                                  <button
+                                    className="btn-danger"
+                                    onClick={() => handleDeleteUser(user.username)}
+                                  >
+                                    <Trash2 size={13} /> Delete
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+
+              {/* 2. LIVE WS SESSIONS TAB */}
+              {activeTab === 'sessions' && (
+                <div className="table-wrap">
+                  {filteredSessions.length === 0 ? (
+                    <div className="empty-state">
+                      <Wifi className="empty-state-icon" />
+                      <div className="empty-state-text">No active WebSocket connections</div>
+                      <div className="empty-state-sub">
+                        {searchQuery ? 'No active session matching search' : 'Connected clients will appear here in real time'}
+                      </div>
+                    </div>
+                  ) : (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Username</th>
+                          <th>Connection Type</th>
+                          <th>Routing Status</th>
+                          <th style={{ textAlign: 'right' }}>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredSessions.map((sessionUsername) => (
+                          <tr key={sessionUsername}>
+                            <td className="user-cell">@{sessionUsername}</td>
+                            <td>
+                              <span className="chip chip-blue">
+                                <Wifi size={11} /> WebSocket (Axum Relay)
+                              </span>
+                            </td>
+                            <td>
+                              <span className="chip chip-green">
+                                <Activity size={11} /> ACTIVE ROUTER
+                              </span>
+                            </td>
+                            <td style={{ textAlign: 'right' }}>
+                              <button
+                                className="btn-danger"
+                                onClick={() => handleDisconnectSession(sessionUsername)}
+                              >
+                                <Power size={13} /> Disconnect
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+
+              {/* 3. OFFLINE QUEUES TAB */}
+              {activeTab === 'offline' && (
+                <div className="table-wrap">
+                  {offlineSummary.length === 0 ? (
+                    <div className="empty-state">
+                      <MessageSquare className="empty-state-icon" />
+                      <div className="empty-state-text">No queued offline messages</div>
+                      <div className="empty-state-sub">All messages have been delivered to active clients!</div>
+                    </div>
+                  ) : (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Recipient User</th>
+                          <th>Pending Messages</th>
+                          <th>Oldest Message</th>
+                          <th>Latest Message</th>
+                          <th>Queue Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {offlineSummary.map((item) => (
+                          <tr key={item.recipient}>
+                            <td className="user-cell">@{item.recipient}</td>
+                            <td className="td-mono" style={{ fontWeight: 600, color: 'var(--amber)' }}>
+                              {item.message_count} msgs
+                            </td>
+                            <td className="td-muted">
+                              {item.oldest_timestamp
+                                ? new Date(item.oldest_timestamp * 1000).toLocaleString()
+                                : '—'}
+                            </td>
+                            <td className="td-muted">
+                              {item.newest_timestamp
+                                ? new Date(item.newest_timestamp * 1000).toLocaleString()
+                                : '—'}
+                            </td>
+                            <td>
+                              <span className="chip chip-amber">
+                                Awaiting Reconnect
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+
+              {/* 4. DEVICES TAB */}
+              {activeTab === 'devices' && (
+                <div className="table-wrap">
+                  {filteredDevices.length === 0 ? (
+                    <div className="empty-state">
+                      <Smartphone className="empty-state-icon" />
+                      <div className="empty-state-text">No registered devices</div>
+                      <div className="empty-state-sub">
+                        {searchQuery ? 'No device matching your search' : 'User devices will appear here once connected'}
+                      </div>
+                    </div>
+                  ) : (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Owner</th>
+                          <th>Hardware Hash / Push Token</th>
+                          <th>Device Name</th>
+                          <th>Platform</th>
+                          <th>Last Active</th>
+                          <th style={{ textAlign: 'right' }}>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredDevices.map((device, idx) => (
+                          <tr key={device.hardware_hash || device.device_id || idx}>
+                            <td className="user-cell">@{device.username}</td>
+                            <td className="td-mono">{device.hardware_hash || device.device_id || '—'}</td>
+                            <td>{device.device_name || 'Desktop'}</td>
+                            <td>
+                              <span className="chip chip-blue">
+                                <Smartphone size={11} /> {device.device_type || device.platform || 'Desktop'}
+                              </span>
+                            </td>
+                            <td className="td-muted">
+                              {device.last_active
+                                ? new Date(device.last_active * 1000).toLocaleString()
+                                : 'Recently'}
+                            </td>
+                            <td style={{ textAlign: 'right' }}>
+                              <button
+                                className="btn-danger"
+                                onClick={() => handleRevokeDevice(device.username, device.hardware_hash || device.device_id)}
+                              >
+                                <Trash2 size={13} /> Revoke
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+
+              {/* 5. ENHANCED ANNOUNCEMENTS TAB (2 EQUAL COLUMNS: COMPOSER ON LEFT, LIST ON RIGHT) */}
+              {activeTab === 'announcements' && (
+                <div className="overview-grid" style={{ gridTemplateColumns: '1fr 1fr' }}>
+                  {/* Left Column: Interactive Composer & Live Markdown Preview */}
+                  <div className="panel" style={{ height: 'fit-content', background: 'var(--surface-2)' }}>
+                    <div className="panel-header">
+                      <div className="panel-title">
+                        <PlusCircle size={15} /> Announcement Composer
+                      </div>
+                      {/* Editor Mode Tabs */}
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        <button
+                          className={`btn-ghost ${announcementComposerTab === 'edit' ? 'active' : ''}`}
+                          onClick={() => setAnnouncementComposerTab('edit')}
+                          style={{ padding: '4px 10px', fontSize: 11 }}
+                        >
+                          <Edit3 size={12} /> Edit
+                        </button>
+                        <button
+                          className={`btn-ghost ${announcementComposerTab === 'preview' ? 'active' : ''}`}
+                          onClick={() => setAnnouncementComposerTab('preview')}
+                          style={{ padding: '4px 10px', fontSize: 11 }}
+                        >
+                          <Eye size={12} /> Live Preview
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="panel-body announcement-form">
+                      {/* 1. Severity / Category Selector */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <label style={{ fontSize: 12, color: 'var(--text-3)', fontWeight: 600 }}>
+                          Announcement Category / Severity:
+                        </label>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                          <button
+                            type="button"
+                            className={`tpl-chip ${announcementCategory === 'INFO' ? 'active' : ''}`}
+                            onClick={() => setAnnouncementCategory('INFO')}
+                            style={{
+                              background: announcementCategory === 'INFO' ? 'var(--accent-dim)' : 'var(--surface-3)',
+                              color: announcementCategory === 'INFO' ? 'var(--accent)' : 'var(--text-2)',
+                              borderColor: announcementCategory === 'INFO' ? 'var(--accent-border)' : 'var(--panel-border)',
+                            }}
+                          >
+                            ℹ️ General Info
+                          </button>
+                          <button
+                            type="button"
+                            className={`tpl-chip ${announcementCategory === 'MAINTENANCE' ? 'active' : ''}`}
+                            onClick={() => setAnnouncementCategory('MAINTENANCE')}
+                            style={{
+                              background: announcementCategory === 'MAINTENANCE' ? 'var(--amber-dim)' : 'var(--surface-3)',
+                              color: announcementCategory === 'MAINTENANCE' ? 'var(--amber)' : 'var(--text-2)',
+                              borderColor: announcementCategory === 'MAINTENANCE' ? 'rgba(245,158,11,0.3)' : 'var(--panel-border)',
+                            }}
+                          >
+                            🔧 Maintenance
+                          </button>
+                          <button
+                            type="button"
+                            className={`tpl-chip ${announcementCategory === 'UPDATE' ? 'active' : ''}`}
+                            onClick={() => setAnnouncementCategory('UPDATE')}
+                            style={{
+                              background: announcementCategory === 'UPDATE' ? 'var(--blue-dim)' : 'var(--surface-3)',
+                              color: announcementCategory === 'UPDATE' ? 'var(--blue)' : 'var(--text-2)',
+                              borderColor: announcementCategory === 'UPDATE' ? 'rgba(59,130,246,0.3)' : 'var(--panel-border)',
+                            }}
+                          >
+                            🚀 Core Upgrade
+                          </button>
+                          <button
+                            type="button"
+                            className={`tpl-chip ${announcementCategory === 'EMERGENCY' ? 'active' : ''}`}
+                            onClick={() => setAnnouncementCategory('EMERGENCY')}
+                            style={{
+                              background: announcementCategory === 'EMERGENCY' ? 'var(--danger-dim)' : 'var(--surface-3)',
+                              color: announcementCategory === 'EMERGENCY' ? '#fca5a5' : 'var(--text-2)',
+                              borderColor: announcementCategory === 'EMERGENCY' ? 'rgba(239,68,68,0.4)' : 'var(--panel-border)',
+                            }}
+                          >
+                            🚨 Outage Alert
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* 2. Formatting Toolbar */}
+                      {announcementComposerTab === 'edit' && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <label style={{ fontSize: 12, color: 'var(--text-3)', fontWeight: 600 }}>
+                              Markdown Formatting Helper:
+                            </label>
+                            <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                              {newAnnouncementText.length} chars
+                            </span>
+                          </div>
+
+                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                            <button
+                              type="button"
+                              className="tpl-chip"
+                              onClick={() => handleFormatInsert('**', '**')}
+                              title="Bold Text"
+                            >
+                              <strong>B</strong>
+                            </button>
+                            <button
+                              type="button"
+                              className="tpl-chip"
+                              onClick={() => handleFormatInsert('\n### ')}
+                              title="Header Level 3"
+                            >
+                              H3
+                            </button>
+                            <button
+                              type="button"
+                              className="tpl-chip"
+                              onClick={() => handleFormatInsert('\n- ')}
+                              title="Bullet Item"
+                            >
+                              • List
+                            </button>
+                            <button
+                              type="button"
+                              className="tpl-chip"
+                              onClick={() => handleFormatInsert('```\n', '\n```')}
+                              title="Code Block"
+                            >
+                              &lt;/&gt; Code
+                            </button>
+                            <button
+                              type="button"
+                              className="tpl-chip"
+                              onClick={() => handleFormatInsert('[title](https://)')}
+                              title="Hyperlink"
+                            >
+                              🔗 Link
+                            </button>
+                          </div>
+
+                          <textarea
+                            placeholder="Type markdown announcement message for connected clients..."
+                            value={newAnnouncementText}
+                            onChange={(e) => setNewAnnouncementText(e.target.value)}
+                            style={{ minHeight: 130 }}
+                          />
+                        </div>
+                      )}
+
+                      {/* 3. Live Markdown Preview Tab */}
+                      {announcementComposerTab === 'preview' && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          <label style={{ fontSize: 12, color: 'var(--text-3)', fontWeight: 600 }}>
+                            Client Markdown Live-Preview:
+                          </label>
+                          <div
+                            style={{
+                              background: 'var(--surface-3)',
+                              border: '1px dashed var(--accent-border)',
+                              borderRadius: 'var(--radius-md)',
+                              padding: '16px',
+                              minHeight: 140,
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                              {getAnnouncementBadge(newAnnouncementText || `[${announcementCategory}]`)}
+                              <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Preview Mode</span>
+                            </div>
+                            {newAnnouncementText.trim() ? (
+                              <MarkdownMessage content={newAnnouncementText} />
+                            ) : (
+                              <div style={{ color: 'var(--text-3)', fontSize: 12, fontStyle: 'italic' }}>
+                                Announcement preview will appear here as you type in the editor...
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 4. Quick Templates / Presets */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <label style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600 }}>
+                          Quick Announcement Presets:
+                        </label>
+                        <div className="template-chips">
+                          <button
+                            type="button"
+                            className="tpl-chip"
+                            onClick={() => {
+                              setAnnouncementCategory('UPDATE');
+                              setNewAnnouncementText(
+                                '🚀 Vexta V2 Relay Update: Core routing performance patch & enhanced group message relaying are now live.'
+                              );
+                            }}
+                          >
+                            🚀 Relay Update
+                          </button>
+                          <button
+                            type="button"
+                            className="tpl-chip"
+                            onClick={() => {
+                              setAnnouncementCategory('UPDATE');
+                              setNewAnnouncementText(
+                                '✨ Feature Release: Multi-device key bundle syncing and encrypted vault backup improvements are active.'
+                              );
+                            }}
+                          >
+                            ✨ New Feature
+                          </button>
+                          <button
+                            type="button"
+                            className="tpl-chip"
+                            onClick={() => {
+                              setAnnouncementCategory('UPDATE');
+                              setNewAnnouncementText(
+                                '🛡️ Security Patch: Essential security patch applied to challenge nonces. All systems nominal.'
+                              );
+                            }}
+                          >
+                            🛡️ Security Patch
+                          </button>
+                          <button
+                            type="button"
+                            className="tpl-chip"
+                            onClick={() => {
+                              setAnnouncementCategory('MAINTENANCE');
+                              setNewAnnouncementText(
+                                '⚠️ Maintenance Window: Scheduled database WAL checkpoint in 30 minutes. Brief reconnects may occur.'
+                              );
+                            }}
+                          >
+                            🔧 Maintenance
+                          </button>
+                          <button
+                            type="button"
+                            className="tpl-chip"
+                            onClick={() => {
+                              setAnnouncementCategory('INFO');
+                              setNewAnnouncementText(
+                                'ℹ️ Nominal Status: All signal relay clusters operating at <0.2ms latency.'
+                              );
+                            }}
+                          >
+                            ✅ Nominal Status
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* 5. Publish Button */}
+                      <button
+                        className="btn-primary"
+                        onClick={() => handlePostAnnouncement()}
+                        style={{ marginTop: 8 }}
+                      >
+                        <Megaphone size={15} /> Publish Announcement
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Right Column: Announcement List with Category Filter */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                    {/* Filter Chips Bar */}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <Filter size={14} style={{ color: 'var(--text-3)' }} />
+                        <span style={{ fontSize: 12, color: 'var(--text-3)', fontWeight: 600 }}>Category Filter:</span>
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        {['ALL', 'EMERGENCY', 'MAINTENANCE', 'UPDATE', 'INFO'].map((cat) => (
+                          <button
+                            key={cat}
+                            className={`tpl-chip ${announcementFilter === cat ? 'active' : ''}`}
+                            onClick={() => setAnnouncementFilter(cat)}
+                            style={{
+                              borderColor: announcementFilter === cat ? 'var(--accent-border)' : 'var(--panel-border)',
+                              color: announcementFilter === cat ? 'var(--accent)' : 'var(--text-2)',
+                              background: announcementFilter === cat ? 'var(--accent-dim)' : 'var(--surface-3)',
+                            }}
+                          >
+                            {cat}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Announcement List Items */}
+                    <div className="announcement-list">
+                      {filteredAnnouncements.length === 0 ? (
+                        <div className="empty-state">
+                          <Megaphone className="empty-state-icon" />
+                          <div className="empty-state-text">No system announcements match your filter</div>
+                          <div className="empty-state-sub">Use the composer on the left to post a new announcement.</div>
+                        </div>
+                      ) : (
+                        filteredAnnouncements.map((ann) => (
+                          <div className="ann-item" key={ann.id} style={{ background: 'var(--surface-2)' }}>
+                            <div className="ann-meta">
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                {getAnnouncementBadge(ann.message)}
+                                <span style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: 'IBM Plex Mono, monospace' }}>
+                                  #{ann.id}
+                                </span>
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span className="ann-id">
+                                  {ann.created_at
+                                    ? new Date(ann.created_at * 1000).toLocaleString()
+                                    : ''}
+                                </span>
+                                <button
+                                  className="btn-ghost"
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(ann.message);
+                                    showToast('Announcement text copied to clipboard!', 'success');
+                                  }}
+                                  title="Copy raw markdown"
+                                  style={{ padding: '4px 8px' }}
+                                >
+                                  <Copy size={12} />
+                                </button>
+                                <button
+                                  className="btn-danger"
+                                  onClick={() => handleDeleteAnnouncement(ann.id)}
+                                  title="Delete broadcast announcement"
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              </div>
+                            </div>
+                            <div className="ann-text" style={{ paddingTop: 4 }}>
+                              <MarkdownMessage content={ann.message} />
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* 6. STORAGE & HEALTH TAB */}
+              {activeTab === 'health' && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 20 }}>
+                  {/* Panel 1: SQLite Storage Engine */}
+                  <div className="panel" style={{ background: 'var(--surface-2)' }}>
+                    <div className="panel-header">
+                      <div className="panel-title">
+                        <Database size={16} /> SQLite WAL Storage Engine
+                      </div>
+                    </div>
+                    <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--panel-border)', paddingBottom: 8 }}>
+                        <span style={{ color: 'var(--text-3)' }}>Database File (`vexta_bridge_v2.db`)</span>
+                        <strong style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{formatBytes(stats.database_size_bytes)}</strong>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--panel-border)', paddingBottom: 8 }}>
+                        <span style={{ color: 'var(--text-3)' }}>WAL File (`vexta_bridge_v2.db-wal`)</span>
+                        <strong style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{formatBytes(stats.wal_size_bytes)}</strong>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--panel-border)', paddingBottom: 8 }}>
+                        <span style={{ color: 'var(--text-3)' }}>Journaling Mode</span>
+                        <span className="chip chip-green">WAL (Write-Ahead Logging)</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: 'var(--text-3)' }}>Foreign Keys</span>
+                        <span className="chip chip-blue">ENABLED (CASCADE)</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Panel 2: Account Provisioning & Vault Ratios */}
+                  <div className="panel" style={{ background: 'var(--surface-2)' }}>
+                    <div className="panel-header">
+                      <div className="panel-title">
+                        <Shield size={16} /> Identity & Provisioning Ratios
+                      </div>
+                    </div>
+                    <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--panel-border)', paddingBottom: 8 }}>
+                        <span style={{ color: 'var(--text-3)' }}>Provisioned User Accounts</span>
+                        <strong>{stats.provisioned_users || 0} / {stats.total_users || 0}</strong>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--panel-border)', paddingBottom: 8 }}>
+                        <span style={{ color: 'var(--text-3)' }}>Encrypted Vault Backups</span>
+                        <strong>{stats.users_with_vault || 0} users</strong>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--panel-border)', paddingBottom: 8 }}>
+                        <span style={{ color: 'var(--text-3)' }}>Pre-key Cryptographic Bundles</span>
+                        <strong>{stats.users_with_prekey || 0} users</strong>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: 'var(--text-3)' }}>Currently Locked Out</span>
+                        <span className={stats.locked_users > 0 ? 'chip chip-red' : 'chip chip-green'}>
+                          {stats.locked_users || 0} accounts
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Panel 3: Server Process Telemetry */}
+                  <div className="panel" style={{ background: 'var(--surface-2)' }}>
+                    <div className="panel-header">
+                      <div className="panel-title">
+                        <Server size={16} /> Server Process & Uptime Metrics
+                      </div>
+                    </div>
+                    <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--panel-border)', paddingBottom: 8 }}>
+                        <span style={{ color: 'var(--text-3)' }}>Rust Server Uptime</span>
+                        <strong style={{ fontFamily: 'IBM Plex Mono, monospace', color: 'var(--accent)' }}>
+                          {formatUptime(stats.uptime_seconds)}
+                        </strong>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--panel-border)', paddingBottom: 8 }}>
+                        <span style={{ color: 'var(--text-3)' }}>In-Memory Routing Table</span>
+                        <span>DashMap (Lock-Free)</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--panel-border)', paddingBottom: 8 }}>
+                        <span style={{ color: 'var(--text-3)' }}>Cryptographic Authentication</span>
+                        <span>Ed25519 Challenge</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: 'var(--text-3)' }}>Binary Framing</span>
+                        <span>MessagePack (rmp-serde)</span>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
           </div>
-
-          <div className="panel-body">
-            {/* 1. USERS TAB */}
-            {activeTab === 'users' && (
-              <div className="table-wrap">
-                {filteredUsers.length === 0 ? (
-                  <div className="empty-state">
-                    <Users className="empty-state-icon" />
-                    <div className="empty-state-text">No user accounts found</div>
-                    <div className="empty-state-sub">
-                      {searchQuery ? 'Try adjusting your search query' : 'Registered user accounts will appear here'}
-                    </div>
-                  </div>
-                ) : (
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Username</th>
-                        <th>Ed25519 Public Key</th>
-                        <th>Created At</th>
-                        <th style={{ textAlign: 'right' }}>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredUsers.map((user) => (
-                        <tr key={user.username}>
-                          <td className="user-cell">@{user.username}</td>
-                          <td>
-                            <div
-                              className="pubkey-cell"
-                              title={user.ed25519_pubkey}
-                              onClick={() => {
-                                navigator.clipboard.writeText(user.ed25519_pubkey);
-                                showToast(`Public key for @${user.username} copied to clipboard!`, 'success');
-                              }}
-                            >
-                              <Key size={12} style={{ display: 'inline', marginRight: 4 }} />
-                              {user.ed25519_pubkey || '—'}
-                            </div>
-                          </td>
-                          <td className="td-muted">
-                            {user.created_at
-                              ? new Date(user.created_at * 1000).toLocaleString()
-                              : '—'}
-                          </td>
-                          <td style={{ textAlign: 'right' }}>
-                            <button
-                              className="btn-danger"
-                              onClick={() => handleDeleteUser(user.username)}
-                            >
-                              <Trash2 size={13} /> Delete
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-            )}
-
-            {/* 2. DEVICES TAB */}
-            {activeTab === 'devices' && (
-              <div className="table-wrap">
-                {filteredDevices.length === 0 ? (
-                  <div className="empty-state">
-                    <Smartphone className="empty-state-icon" />
-                    <div className="empty-state-text">No registered devices</div>
-                    <div className="empty-state-sub">
-                      {searchQuery ? 'No device matching your search' : 'User devices will appear here once connected'}
-                    </div>
-                  </div>
-                ) : (
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Owner</th>
-                        <th>Device ID / Push Token</th>
-                        <th>Platform</th>
-                        <th>Last Active</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredDevices.map((device, idx) => (
-                        <tr key={device.device_id || idx}>
-                          <td className="user-cell">@{device.username}</td>
-                          <td className="td-mono">{device.device_id || '—'}</td>
-                          <td>
-                            <span className="chip chip-blue">
-                              <Smartphone size={11} /> {device.platform || 'Generic'}
-                            </span>
-                          </td>
-                          <td className="td-muted">
-                            {device.last_active
-                              ? new Date(device.last_active * 1000).toLocaleString()
-                              : 'Recently'}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-            )}
-
-            {/* 3. ANNOUNCEMENTS TAB */}
-            {activeTab === 'announcements' && (
-              <div className="overview-grid">
-                {/* Announcement List */}
-                <div className="announcement-list">
-                  {announcements.length === 0 ? (
-                    <div className="empty-state">
-                      <Megaphone className="empty-state-icon" />
-                      <div className="empty-state-text">No system announcements posted</div>
-                    </div>
-                  ) : (
-                    announcements.map((ann) => (
-                      <div className="ann-item" key={ann.id}>
-                        <div className="ann-meta">
-                          <span className="chip chip-amber">
-                            <Megaphone size={11} /> Notice #{ann.id}
-                          </span>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                            <span className="ann-id">
-                              {ann.created_at
-                                ? new Date(ann.created_at * 1000).toLocaleString()
-                                : ''}
-                            </span>
-                            <button
-                              className="btn-danger"
-                              onClick={() => handleDeleteAnnouncement(ann.id)}
-                            >
-                              <Trash2 size={12} />
-                            </button>
-                          </div>
-                        </div>
-                        <div className="ann-text">
-                          <MarkdownMessage content={ann.message} />
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-
-                {/* Create Announcement Form */}
-                <div className="panel" style={{ height: 'fit-content', background: 'var(--surface-2)' }}>
-                  <div className="panel-header">
-                    <div className="panel-title">
-                      <PlusCircle size={15} /> Create Announcement
-                    </div>
-                  </div>
-                  <div className="panel-body announcement-form">
-                    <label style={{ fontSize: 12, color: 'var(--text-3)' }}>
-                      Quick Templates:
-                    </label>
-                    <div className="template-chips">
-                      <button
-                        className="tpl-chip"
-                        onClick={() =>
-                          setNewAnnouncementText(
-                            '⚠️ Scheduled maintenance window in 30 minutes. Relays may temporarily reconnect.'
-                          )
-                        }
-                      >
-                        🔧 Maintenance
-                      </button>
-                      <button
-                        className="tpl-chip"
-                        onClick={() =>
-                          setNewAnnouncementText(
-                            '🚀 Vexta Bridge V2 core relay upgraded. Zero-knowledge encryption active.'
-                          )
-                        }
-                      >
-                        ⚡ Upgrade
-                      </button>
-                      <button
-                        className="tpl-chip"
-                        onClick={() =>
-                          setNewAnnouncementText(
-                            'ℹ️ All system relays operating at nominal latency (<5ms).'
-                          )
-                        }
-                      >
-                        ✅ Nominal Status
-                      </button>
-                    </div>
-
-                    <textarea
-                      placeholder="Type broadcast message for all connected clients..."
-                      value={newAnnouncementText}
-                      onChange={(e) => setNewAnnouncementText(e.target.value)}
-                    ></textarea>
-
-                    <button
-                      className="btn-primary"
-                      onClick={() => handlePostAnnouncement()}
-                    >
-                      <Megaphone size={15} /> Publish Announcement
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </main>
+        </main>
+      </div>
 
       {/* ── Toast Notifications ── */}
       {toast && (

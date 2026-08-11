@@ -35,13 +35,17 @@
   padding: 0;
 }
 
+html, body {
+  height: 100vh;
+  overflow: hidden;
+}
+
 body {
   background-color: var(--surface);
   color: var(--text-1);
   font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
   font-size: 14px;
   line-height: 1.5;
-  min-height: 100vh;
   background-image:
     radial-gradient(ellipse 60% 40% at 10% 0%, rgba(57, 255, 20, 0.05) 0%, transparent 50%),
     radial-gradient(ellipse 50% 50% at 90% 100%, rgba(59, 130, 246, 0.04) 0%, transparent 50%);
@@ -50,7 +54,8 @@ body {
 .shell {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
 /* ───── Dedicated Login Page ───── */
@@ -331,14 +336,135 @@ button:disabled, .btn:disabled {
   transform: none !important;
 }
 
-/* ───── Main Content ───── */
-.main {
+/* ───── Main Content & Sidebar Layout ───── */
+.layout-container {
+  display: flex;
   flex: 1;
-  padding: 28px;
-  max-width: 1600px;
-  margin: 0 auto;
-  width: 100%;
+  height: calc(100vh - 67px);
+  overflow: hidden;
 }
+
+.sidebar {
+  width: 260px;
+  height: 100%;
+  background: rgba(13, 13, 17, 0.85);
+  border-right: 1px solid var(--panel-border);
+  backdrop-filter: blur(16px);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 24px 14px;
+  flex-shrink: 0;
+  overflow-y: auto;
+}
+
+.sidebar-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sidebar-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  padding: 8px 12px 4px 12px;
+}
+
+.sidebar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 11px 14px;
+  border-radius: var(--radius-md);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-2);
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  text-align: left;
+}
+
+.sidebar-btn-content {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sidebar-btn:hover {
+  background: var(--surface-3);
+  color: var(--text-1);
+}
+
+.sidebar-btn.active {
+  background: var(--accent-dim);
+  border-color: var(--accent-border);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.sidebar-count {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 12px;
+  background: var(--surface-3);
+  color: var(--text-2);
+  border: 1px solid var(--panel-border);
+}
+
+.sidebar-btn.active .sidebar-count {
+  background: rgba(57, 255, 20, 0.18);
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+
+.sidebar-footer {
+  background: var(--surface-2);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.main-content {
+  flex: 1;
+  height: 100%;
+  padding: 28px;
+  overflow-y: auto;
+  max-width: 100%;
+}
+
+@media (max-width: 900px) {
+  html, body, .shell {
+    height: auto;
+    overflow: auto;
+  }
+  .layout-container {
+    flex-direction: column;
+    height: auto;
+    overflow: visible;
+  }
+  .sidebar {
+    width: 100%;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--panel-border);
+  }
+  .main-content {
+    height: auto;
+    overflow: visible;
+  }
+}
+
 
 /* ───── Stats Grid ───── */
 .stats-grid {
@@ -841,8 +967,40 @@ textarea {
 .toast.error   { background: #1f0b0b; border: 1px solid rgba(239,68,68,0.4);  color: #fca5a5; }
 .toast.info    { background: #0b1020; border: 1px solid rgba(59,130,246,0.4); color: #93c5fd; }
 
+/* ───── Additional Chips & Buttons ───── */
+.chip-green { background: var(--accent-dim); border: 1px solid var(--accent-border); color: var(--accent); }
+.chip-red   { background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.3); color: #fca5a5; }
+.chip-purple{ background: var(--purple-dim); border: 1px solid rgba(168,85,247,0.3); color: #d8b4fe; }
+.chip-slate { background: var(--surface-3); border: 1px solid var(--panel-border); color: var(--text-2); }
+
+.btn-warning {
+  background: var(--amber-dim);
+  border: 1px solid rgba(245,158,11,0.3);
+  color: var(--amber);
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.15s;
+  font-family: inherit;
+}
+.btn-warning:hover {
+  background: rgba(245,158,11,0.25);
+  border-color: var(--amber);
+}
+
+.stat-card.slate { border-color: var(--panel-border); }
+.stat-card:hover.slate { border-color: rgba(255,255,255,0.2); }
+.stat-icon.slate { background: var(--surface-3); color: var(--text-2); }
+.stat-value.slate { color: var(--text-1); }
+
 /* ───── Scrollbar ───── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.25); }
+
