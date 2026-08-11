@@ -29,6 +29,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 async fn main() {
     // 0. Load .env environment variables if present
     dotenvy::dotenv().ok();
+    dotenvy::from_path("/app/data/.env").ok();
 
     // 1. Initialize Logging
     tracing_subscriber::registry()
