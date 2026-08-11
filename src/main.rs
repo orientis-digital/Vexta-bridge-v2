@@ -203,7 +203,7 @@ async fn admin_unlock_user_handler(
         return (StatusCode::OK, Json(json!({ "success": true, "unlocked_username": username })));
     }
 
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})));
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})))
 }
 
 // Admin Revoke Device Handler
@@ -221,7 +221,7 @@ async fn admin_revoke_device_handler(
         return (StatusCode::OK, Json(json!({ "success": true, "revoked_device": hardware_hash, "username": username })));
     }
 
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})));
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})))
 }
 
 // Admin Offline Messages Summary Handler
@@ -237,7 +237,7 @@ async fn admin_offline_messages_summary_handler(
         return (StatusCode::OK, Json(serde_json::to_value(summary).unwrap()));
     }
 
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})));
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})))
 }
 
 #[derive(Deserialize)]
@@ -263,7 +263,7 @@ async fn admin_purge_offline_messages_handler(
         return (StatusCode::OK, Json(json!({ "success": true, "deleted_count": deleted_count, "cutoff_days": days })));
     }
 
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})));
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})))
 }
 
 // Admin List Users Handler
