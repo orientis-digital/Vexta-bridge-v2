@@ -207,6 +207,14 @@ export default function App() {
   const [sessions, setSessions] = useState([]);
   const [offlineSummary, setOfflineSummary] = useState([]);
 
+  // New Admin Feature States: Firewall, Maintenance, Audit, Analytics, DB Health
+  const [bannedIps, setBannedIps] = useState([]);
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [topUsers, setTopUsers] = useState([]);
+  const [dbHealth, setDbHealth] = useState(null);
+  const [banIpInput, setBanIpInput] = useState('');
+  const [banReasonInput, setBanReasonInput] = useState('');
+
   // Enhanced Announcement Composer States
   const [newAnnouncementText, setNewAnnouncementText] = useState('');
   const [announcementCategory, setAnnouncementCategory] = useState('INFO');
@@ -283,6 +291,22 @@ export default function App() {
         setOfflineSummary(offlineData);
       }
 
+      // 7. Banned IPs REST API
+      const resBans = await fetch('/api/admin/banned-ips', { headers });
+      if (resBans.ok) setBannedIps(await resBans.json());
+
+      // 8. Audit Logs REST API
+      const resAudit = await fetch('/api/admin/audit-logs', { headers });
+      if (resAudit.ok) setAuditLogs(await resAudit.json());
+
+      // 9. Top User Analytics REST API
+      const resTop = await fetch('/api/admin/analytics/top-users', { headers });
+      if (resTop.ok) setTopUsers(await resTop.json());
+
+      // 10. Database Health REST API
+      const resHealth = await fetch('/api/admin/system/db-health', { headers });
+      if (resHealth.ok) setDbHealth(await resHealth.json());
+
       setLastUpdated(new Date().toLocaleTimeString());
       return true;
     } catch (err) {
@@ -291,6 +315,75 @@ export default function App() {
       return false;
     }
   }, [secretKey]);
+
+  // Action Handlers for IP Banning, Maintenance, and DB Vacuuming
+  const handleBanIp = async (e) => {
+    e.preventDefault();
+    if (!banIpInput.trim()) return;
+    try {
+      const res = await fetch('/api/admin/banned-ips', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-secret': secretKey },
+        body: JSON.stringify({ ip: banIpInput.trim(), reason: banReasonInput.trim() || 'Banned by admin' })
+      });
+      if (res.ok) {
+        showToast(`Banned IP ${banIpInput.trim()}`, 'success');
+        setBanIpInput('');
+        setBanReasonInput('');
+        fetchData();
+      } else {
+        showToast('Failed to ban IP', 'error');
+      }
+    } catch (err) {
+      showToast('Error banning IP', 'error');
+    }
+  };
+
+  const handleUnbanIp = async (ip) => {
+    try {
+      const res = await fetch(`/api/admin/banned-ips/${encodeURIComponent(ip)}`, {
+        method: 'DELETE',
+        headers: { 'x-admin-secret': secretKey }
+      });
+      if (res.ok) {
+        showToast(`Unbanned IP ${ip}`, 'info');
+        fetchData();
+      }
+    } catch (err) {
+      showToast('Error unbanning IP', 'error');
+    }
+  };
+
+  const handleToggleMaintenance = async (enable) => {
+    const endpoint = enable ? '/api/admin/maintenance/enable' : '/api/admin/maintenance/disable';
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'x-admin-secret': secretKey }
+      });
+      if (res.ok) {
+        showToast(enable ? 'Emergency maintenance enabled 🚨' : 'Maintenance disabled. Bridge online 🟢', 'warning');
+        fetchData();
+      }
+    } catch (err) {
+      showToast('Error toggling maintenance mode', 'error');
+    }
+  };
+
+  const handleVacuumDb = async () => {
+    try {
+      const res = await fetch('/api/admin/system/vacuum', {
+        method: 'POST',
+        headers: { 'x-admin-secret': secretKey }
+      });
+      if (res.ok) {
+        showToast('SQLite WAL truncated & database vacuumed 🧹', 'success');
+        fetchData();
+      }
+    } catch (err) {
+      showToast('Error vacuuming database', 'error');
+    }
+  };
 
   // Submit Login Token
   const handleLoginSubmit = async (e) => {
@@ -755,6 +848,51 @@ export default function App() {
               <span className="sidebar-count">{announcements.length}</span>
             </button>
 
+            <div className="sidebar-label" style={{ marginTop: 12 }}>Security & Management</div>
+
+            <button
+              className={`sidebar-btn ${activeTab === 'firewall' ? 'active' : ''}`}
+              onClick={() => setActiveTab('firewall')}
+            >
+              <div className="sidebar-btn-content">
+                <Shield size={16} style={{ color: 'var(--danger)' }} />
+                <span>IP Firewall</span>
+              </div>
+              <span className="sidebar-count" style={{ background: 'var(--danger-dim)', color: 'var(--danger)' }}>{bannedIps.length}</span>
+            </button>
+
+            <button
+              className={`sidebar-btn ${activeTab === 'maintenance' ? 'active' : ''}`}
+              onClick={() => setActiveTab('maintenance')}
+            >
+              <div className="sidebar-btn-content">
+                <AlertTriangle size={16} style={{ color: 'var(--amber)' }} />
+                <span>Maintenance</span>
+              </div>
+              {stats.maintenance_mode && <span className="sidebar-count" style={{ background: 'var(--danger)', color: '#fff' }}>ON</span>}
+            </button>
+
+            <button
+              className={`sidebar-btn ${activeTab === 'audit' ? 'active' : ''}`}
+              onClick={() => setActiveTab('audit')}
+            >
+              <div className="sidebar-btn-content">
+                <Clock size={16} />
+                <span>Audit Logs</span>
+              </div>
+              <span className="sidebar-count">{auditLogs.length}</span>
+            </button>
+
+            <button
+              className={`sidebar-btn ${activeTab === 'analytics' ? 'active' : ''}`}
+              onClick={() => setActiveTab('analytics')}
+            >
+              <div className="sidebar-btn-content">
+                <TrendingUp size={16} style={{ color: 'var(--accent)' }} />
+                <span>Traffic Analytics</span>
+              </div>
+            </button>
+
             <div className="sidebar-label" style={{ marginTop: 12 }}>Telemetry</div>
 
             <button
@@ -763,7 +901,7 @@ export default function App() {
             >
               <div className="sidebar-btn-content">
                 <HardDrive size={16} />
-                <span>Storage & Health</span>
+                <span>Storage & Vacuum</span>
               </div>
             </button>
           </div>
@@ -1726,9 +1864,183 @@ export default function App() {
                 </div>
               )}
 
+              {/* 7. IP FIREWALL TAB */}
+              {activeTab === 'firewall' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+                  <form onSubmit={handleBanIp} style={{ display: 'flex', gap: 12, flexWrap: 'wrap', background: 'var(--surface-2)', padding: 16, borderRadius: 'var(--radius-md)', border: '1px solid var(--panel-border)' }}>
+                    <input
+                      type="text"
+                      placeholder="IP Address (e.g. 192.168.1.100)"
+                      value={banIpInput}
+                      onChange={(e) => setBanIpInput(e.target.value)}
+                      style={{ flex: '1 1 200px', padding: '8px 12px', background: 'var(--surface-3)', border: '1px solid var(--panel-border)', borderRadius: 6, color: '#fff' }}
+                      required
+                    />
+                    <input
+                      type="text"
+                      placeholder="Reason (e.g. Rate limit abuse / DDOS)"
+                      value={banReasonInput}
+                      onChange={(e) => setBanReasonInput(e.target.value)}
+                      style={{ flex: '2 1 300px', padding: '8px 12px', background: 'var(--surface-3)', border: '1px solid var(--panel-border)', borderRadius: 6, color: '#fff' }}
+                    />
+                    <button type="submit" className="btn-danger" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <Shield size={14} /> Ban IP Address
+                    </button>
+                  </form>
+
+                  <div className="table-wrap">
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>IP Address</th>
+                          <th>Ban Reason</th>
+                          <th>Banned By</th>
+                          <th>Banned Timestamp</th>
+                          <th>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {bannedIps.length === 0 ? (
+                          <tr>
+                            <td colSpan="5" style={{ textAlign: 'center', padding: 24, color: 'var(--text-3)' }}>
+                              🛡️ Firewall Active. No IP addresses are currently banned.
+                            </td>
+                          </tr>
+                        ) : (
+                          bannedIps.map((b) => (
+                            <tr key={b.ip}>
+                              <td style={{ fontFamily: 'IBM Plex Mono, monospace', fontWeight: 600, color: 'var(--danger)' }}>{b.ip}</td>
+                              <td>{b.reason}</td>
+                              <td>{b.banned_by}</td>
+                              <td>{b.created_at ? new Date(b.created_at * 1000).toLocaleString() : '—'}</td>
+                              <td>
+                                <button className="btn-ghost" onClick={() => handleUnbanIp(b.ip)}>Unban IP</button>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* 8. EMERGENCY MAINTENANCE TAB */}
+              {activeTab === 'maintenance' && (
+                <div className="panel" style={{ background: 'var(--surface-2)', padding: 24 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 20 }}>
+                    <AlertTriangle size={36} style={{ color: stats.maintenance_mode ? 'var(--danger)' : 'var(--amber)' }} />
+                    <div>
+                      <h3 style={{ fontSize: 18, margin: 0 }}>Bridge Maintenance Mode Control</h3>
+                      <p style={{ margin: '4px 0 0', color: 'var(--text-3)', fontSize: 13 }}>
+                        When maintenance mode is ON, incoming WebSocket client connections are gracefully rejected with a 503 Notice.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: 16, background: 'var(--surface-3)', borderRadius: 12, border: '1px solid var(--panel-border)' }}>
+                    <span style={{ fontSize: 14, fontWeight: 600 }}>Current Mode:</span>
+                    <span className={stats.maintenance_mode ? 'chip chip-red' : 'chip chip-green'} style={{ fontSize: 14, padding: '4px 12px' }}>
+                      {stats.maintenance_mode ? '🚨 EMERGENCY MAINTENANCE ACTIVE' : '🟢 BRIDGE OPERATIONAL (ONLINE)'}
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 16, marginTop: 24 }}>
+                    {!stats.maintenance_mode ? (
+                      <button className="btn-danger" onClick={() => handleToggleMaintenance(true)} style={{ padding: '10px 20px' }}>
+                        🚨 Enable Maintenance Lockdown
+                      </button>
+                    ) : (
+                      <button className="btn-primary" onClick={() => handleToggleMaintenance(false)} style={{ padding: '10px 20px' }}>
+                        🟢 Resume Normal Operation
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* 9. AUDIT LOGS TAB */}
+              {activeTab === 'audit' && (
+                <div className="table-wrap">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>#ID</th>
+                        <th>Action</th>
+                        <th>Target</th>
+                        <th>Details</th>
+                        <th>Timestamp</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {auditLogs.length === 0 ? (
+                        <tr>
+                          <td colSpan="5" style={{ textAlign: 'center', padding: 24, color: 'var(--text-3)' }}>
+                            📜 No administrative audit logs recorded yet.
+                          </td>
+                        </tr>
+                      ) : (
+                        auditLogs.map((log) => (
+                          <tr key={log.id}>
+                            <td style={{ fontFamily: 'IBM Plex Mono, monospace' }}>#{log.id}</td>
+                            <td><span className="chip chip-blue">{log.action}</span></td>
+                            <td style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{log.target}</td>
+                            <td>{log.details}</td>
+                            <td>{log.timestamp ? new Date(log.timestamp * 1000).toLocaleString() : '—'}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* 10. TRAFFIC ANALYTICS TAB */}
+              {activeTab === 'analytics' && (
+                <div className="table-wrap">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>User Account</th>
+                        <th>Messages Relayed</th>
+                        <th>Bandwidth Utilized</th>
+                        <th>Last Active</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {topUsers.length === 0 ? (
+                        <tr>
+                          <td colSpan="4" style={{ textAlign: 'center', padding: 24, color: 'var(--text-3)' }}>
+                            📊 No per-user traffic recorded yet.
+                          </td>
+                        </tr>
+                      ) : (
+                        topUsers.map((u) => (
+                          <tr key={u.username}>
+                            <td style={{ fontWeight: 600, color: 'var(--accent)' }}>@{u.username}</td>
+                            <td>{u.message_count} msgs</td>
+                            <td style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{formatBytes(u.byte_count)}</td>
+                            <td>{u.last_active ? new Date(u.last_active * 1000).toLocaleString() : '—'}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
               {/* 6. STORAGE & HEALTH TAB */}
               {activeTab === 'health' && (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 20 }}>
+                  <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--surface-2)', padding: 16, borderRadius: 12, border: '1px solid var(--panel-border)' }}>
+                    <div>
+                      <strong style={{ fontSize: 15 }}>SQLite Database Optimization & Maintenance</strong>
+                      <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--text-3)' }}>Run WAL checkpoint and VACUUM to reclaim disk space.</p>
+                    </div>
+                    <button className="btn-primary" onClick={handleVacuumDb} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <RefreshCw size={14} /> Run WAL Vacuum
+                    </button>
+                  </div>
                   {/* Panel 1: SQLite Storage Engine */}
                   <div className="panel" style={{ background: 'var(--surface-2)' }}>
                     <div className="panel-header">

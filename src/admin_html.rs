@@ -816,6 +816,21 @@ pub static ADMIN_HTML: &str = r#"<!DOCTYPE html>
             <button class="tab-btn" onclick="switchTab('announcements')" id="tab-announcements" role="tab" aria-selected="false">
                 📢 Announcements
             </button>
+            <button class="tab-btn" onclick="switchTab('firewall')" id="tab-firewall" role="tab" aria-selected="false">
+                🛡️ IP Firewall
+            </button>
+            <button class="tab-btn" onclick="switchTab('maintenance')" id="tab-maintenance" role="tab" aria-selected="false">
+                🚨 Maintenance
+            </button>
+            <button class="tab-btn" onclick="switchTab('audit')" id="tab-audit" role="tab" aria-selected="false">
+                📜 Audit Logs
+            </button>
+            <button class="tab-btn" onclick="switchTab('analytics')" id="tab-analytics" role="tab" aria-selected="false">
+                📊 Traffic Leaderboard
+            </button>
+            <button class="tab-btn" onclick="switchTab('vacuum')" id="tab-vacuum" role="tab" aria-selected="false">
+                🧹 DB Vacuum
+            </button>
         </div>
 
         <!-- ── Tab: Overview ── -->
