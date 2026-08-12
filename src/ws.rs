@@ -61,10 +61,12 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, _client_ip: Strin
     let nonce_bytes = ServerCrypto::generate_nonce();
     let nonce_hex = hex::encode(nonce_bytes);
 
+    let server_sig = state.crypto.sign_nonce(&nonce_hex);
+
     let challenge_frame = BridgeFrame::AuthChallenge {
         nonce: nonce_hex.clone(),
         server_public_key: state.crypto.get_pubkey_pem(),
-        server_signature: None,
+        server_signature: Some(server_sig),
     };
 
     info!("[WS Bridge V2] New WebSocket connection established; issued AUTH_CHALLENGE nonce={}...", &nonce_hex[..8]);
