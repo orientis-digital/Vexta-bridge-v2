@@ -5,9 +5,12 @@ use axum::extract::ws::Message;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub type Tx = UnboundedSender<Message>;
+
+pub const SERVER_VERSION: &str = "v0.0.1";
+pub const SERVER_NAME: &str = "Vexta Bridge V2 - v0.0.1";
 
 #[derive(Clone)]
 pub struct AppState {
@@ -19,6 +22,8 @@ pub struct AppState {
     pub total_messages_relayed: Arc<AtomicU64>,
     pub total_bytes_relayed: Arc<AtomicU64>,
     pub broadcast_tx: tokio::sync::broadcast::Sender<String>,
+    pub maintenance_mode: Arc<AtomicBool>,
+    pub ip_ban_list: Arc<DashMap<String, String>>,
 }
 
 impl AppState {
@@ -30,6 +35,15 @@ impl AppState {
         let total_messages_relayed = Arc::new(AtomicU64::new(0));
         let total_bytes_relayed = Arc::new(AtomicU64::new(0));
         let (broadcast_tx, _) = tokio::sync::broadcast::channel(256);
+        let maintenance_mode = Arc::new(AtomicBool::new(false));
+        let ip_ban_list = Arc::new(DashMap::new());
+
+        // Cache initial banned IPs from SQLite
+        if let Ok(banned_ips) = db.list_banned_ips() {
+            for b in banned_ips {
+                ip_ban_list.insert(b.ip, b.reason);
+            }
+        }
 
         Self {
             db,
@@ -39,7 +53,44 @@ impl AppState {
             total_messages_relayed,
             total_bytes_relayed,
             broadcast_tx,
+            maintenance_mode,
+            ip_ban_list,
         }
+    }
+
+    pub fn is_maintenance_enabled(&self) -> bool {
+        self.maintenance_mode.load(Ordering::Relaxed)
+    }
+
+    pub fn set_maintenance(&self, enabled: bool) {
+        self.maintenance_mode.store(enabled, Ordering::Relaxed);
+        self.emit_event(&serde_json::json!({
+            "event": "maintenance_changed",
+            "enabled": enabled,
+        }).to_string());
+    }
+
+    pub fn is_ip_banned(&self, ip: &str) -> bool {
+        let clean_ip = ip.trim();
+        self.ip_ban_list.contains_key(clean_ip)
+    }
+
+    pub fn ban_ip_cache(&self, ip: String, reason: String) {
+        let clean_ip = ip.trim().to_string();
+        self.ip_ban_list.insert(clean_ip.clone(), reason);
+        self.emit_event(&serde_json::json!({
+            "event": "ip_banned",
+            "ip": clean_ip,
+        }).to_string());
+    }
+
+    pub fn unban_ip_cache(&self, ip: &str) {
+        let clean_ip = ip.trim();
+        self.ip_ban_list.remove(clean_ip);
+        self.emit_event(&serde_json::json!({
+            "event": "ip_unbanned",
+            "ip": clean_ip,
+        }).to_string());
     }
 
     pub fn emit_event(&self, event_json: &str) {
@@ -102,6 +153,13 @@ impl AppState {
             "total_messages": total_msgs,
             "total_bytes": total_bytes,
         }).to_string());
+    }
+
+    pub fn record_user_traffic(&self, sender: &str, bytes: u64) {
+        self.record_traffic(bytes);
+        if !sender.trim().is_empty() {
+            let _ = self.db.record_user_traffic_stat(sender, bytes);
+        }
     }
 
     pub fn get_traffic_stats(&self) -> (u64, u64) {

@@ -2,25 +2,45 @@ use crate::crypto::ServerCrypto;
 use crate::models::{BridgeFrame, VextaUser};
 use crate::state::AppState;
 use axum::{
-    extract::{ws::{Message, WebSocket, WebSocketUpgrade}, State},
-    response::Response,
+    extract::{ws::{Message, WebSocket, WebSocketUpgrade}, ConnectInfo, State},
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
 };
+use std::net::SocketAddr;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tracing::{info, error};
 
 pub async fn ws_handler(
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
 ) -> Response {
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+    let client_ip = headers.get("cf-connecting-ip")
+        .or_else(|| headers.get("x-forwarded-for"))
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
+        .unwrap_or_else(|| addr.ip().to_string());
+
+    if state.is_ip_banned(&client_ip) {
+        info!("[WS Bridge V2] Rejected connection from banned IP: {}", client_ip);
+        return (StatusCode::FORBIDDEN, "IP address is banned by administrator").into_response();
+    }
+
+    if state.is_maintenance_enabled() {
+        info!("[WS Bridge V2] Connection from {} rejected due to server maintenance", client_ip);
+        return (StatusCode::SERVICE_UNAVAILABLE, "Server is currently under emergency maintenance").into_response();
+    }
+
+    ws.on_upgrade(move |socket| handle_socket(socket, state, client_ip))
 }
 
 fn clean_user(u: &str) -> String {
     u.trim().trim_start_matches('@').to_lowercase()
 }
 
-pub async fn handle_socket(socket: WebSocket, state: AppState) {
+pub async fn handle_socket(socket: WebSocket, state: AppState, _client_ip: String) {
     let (mut ws_sender, mut ws_receiver) = socket.split();
 
     // Channel for pushing messages to this client session
@@ -238,7 +258,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                         };
 
                         let text_json = serde_json::to_string(&blind_frame).unwrap();
-                        state.record_traffic(text_json.len() as u64);
+                        state.record_user_traffic(&sender, text_json.len() as u64);
 
                         let delivered = state.send_to_user(&clean_recipient, Message::Text(text_json));
                         if !delivered {

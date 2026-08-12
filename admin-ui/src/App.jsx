@@ -561,7 +561,7 @@ export default function App() {
               <div className="login-title">
                 <span>VEXTA</span> BRIDGE V2
               </div>
-              <div className="login-sub">ADMIN CONSOLE AUTHENTICATION</div>
+              <div className="login-sub">Vexta Bridge V2 - v0.0.1</div>
             </div>
           </div>
 
@@ -647,7 +647,7 @@ export default function App() {
             <div className="brand-name">
               <span>VEXTA</span> BRIDGE V2
             </div>
-            <div className="brand-sub">ENTERPRISE MANAGEMENT CONSOLE</div>
+            <div className="brand-sub">Vexta Bridge V2 - v0.0.1</div>
           </div>
           <div className="status-badge">
             <span className="status-dot"></span> ONLINE

@@ -79,7 +79,21 @@ async fn main() {
         .route("/api/admin/offline-messages/summary", get(admin_offline_messages_summary_handler))
         .route("/api/admin/offline-messages/purge", post(admin_purge_offline_messages_handler))
         .route("/api/admin/announcements", get(admin_list_announcements_handler).post(admin_post_announcement_handler))
-        .route("/api/admin/announcements/:id", delete(admin_delete_announcement_handler));
+        .route("/api/admin/announcements/:id", delete(admin_delete_announcement_handler))
+        // IP Firewall
+        .route("/api/admin/banned-ips", get(admin_list_banned_ips_handler).post(admin_ban_ip_handler))
+        .route("/api/admin/banned-ips/:ip", delete(admin_unban_ip_handler))
+        // Maintenance Mode
+        .route("/api/admin/maintenance", get(admin_get_maintenance_handler))
+        .route("/api/admin/maintenance/enable", post(admin_enable_maintenance_handler))
+        .route("/api/admin/maintenance/disable", post(admin_disable_maintenance_handler))
+        // Audit Logs
+        .route("/api/admin/audit-logs", get(admin_list_audit_logs_handler))
+        // System Vacuum & Health
+        .route("/api/admin/system/vacuum", post(admin_vacuum_db_handler))
+        .route("/api/admin/system/db-health", get(admin_db_health_handler))
+        // Traffic Analytics
+        .route("/api/admin/analytics/top-users", get(admin_top_user_analytics_handler));
 
     // Admin UI Routing: Serve React bundle from 'admin-ui/dist' if built, else fallback to embedded HTML
     let admin_dist_path = std::path::Path::new("admin-ui/dist");
@@ -187,7 +201,10 @@ async fn admin_stats_handler(
         return (
             StatusCode::OK,
             Json(json!({
+                "version": state::SERVER_VERSION,
+                "server_name": state::SERVER_NAME,
                 "active_ws_sessions": active_sessions,
+                "maintenance_mode": state.is_maintenance_enabled(),
                 "total_users": stats.total_users,
                 "total_queued_offline_messages": stats.total_queued_offline_messages,
                 "total_registered_devices": stats.total_registered_devices,
@@ -207,6 +224,155 @@ async fn admin_stats_handler(
         );
     }
 
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})))
+}
+
+#[derive(Deserialize)]
+struct BanIpReq {
+    ip: String,
+    reason: Option<String>,
+}
+
+// IP Firewall Handlers
+async fn admin_list_banned_ips_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if !verify_admin_auth(&headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
+    }
+    if let Ok(list) = state.db.list_banned_ips() {
+        return (StatusCode::OK, Json(serde_json::to_value(list).unwrap()));
+    }
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})))
+}
+
+async fn admin_ban_ip_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    Json(payload): Json<BanIpReq>,
+) -> impl IntoResponse {
+    if !verify_admin_auth(&headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
+    }
+    let reason = payload.reason.unwrap_or_else(|| "Banned by administrator".into());
+    if let Ok(_) = state.db.ban_ip(&payload.ip, &reason, "Admin") {
+        state.ban_ip_cache(payload.ip.clone(), reason.clone());
+        let _ = state.db.log_audit_action("BAN_IP", &payload.ip, &reason);
+        info!("[Admin Console] Banned IP address '{}'", payload.ip);
+        return (StatusCode::OK, Json(json!({"success": true, "banned_ip": payload.ip})));
+    }
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})))
+}
+
+async fn admin_unban_ip_handler(
+    Path(ip): Path<String>,
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if !verify_admin_auth(&headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
+    }
+    if let Ok(_) = state.db.unban_ip(&ip) {
+        state.unban_ip_cache(&ip);
+        let _ = state.db.log_audit_action("UNBAN_IP", &ip, "Unbanned by admin");
+        info!("[Admin Console] Unbanned IP address '{}'", ip);
+        return (StatusCode::OK, Json(json!({"success": true, "unbanned_ip": ip})));
+    }
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})))
+}
+
+// Maintenance Mode Handlers
+async fn admin_get_maintenance_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if !verify_admin_auth(&headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
+    }
+    (StatusCode::OK, Json(json!({ "maintenance_mode": state.is_maintenance_enabled() })))
+}
+
+async fn admin_enable_maintenance_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if !verify_admin_auth(&headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
+    }
+    state.set_maintenance(true);
+    let _ = state.db.log_audit_action("ENABLE_MAINTENANCE", "server", "Server entered emergency maintenance mode");
+    info!("[Admin Console] Enabled emergency maintenance mode");
+    (StatusCode::OK, Json(json!({ "success": true, "maintenance_mode": true })))
+}
+
+async fn admin_disable_maintenance_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if !verify_admin_auth(&headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
+    }
+    state.set_maintenance(false);
+    let _ = state.db.log_audit_action("DISABLE_MAINTENANCE", "server", "Resumed normal bridge operation");
+    info!("[Admin Console] Disabled maintenance mode — resumed operations");
+    (StatusCode::OK, Json(json!({ "success": true, "maintenance_mode": false })))
+}
+
+// Audit Logs Handler
+async fn admin_list_audit_logs_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if !verify_admin_auth(&headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
+    }
+    if let Ok(logs) = state.db.list_audit_logs(100) {
+        return (StatusCode::OK, Json(serde_json::to_value(logs).unwrap()));
+    }
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})))
+}
+
+// Database Vacuum & Health Handlers
+async fn admin_vacuum_db_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if !verify_admin_auth(&headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
+    }
+    if let Ok(_) = state.db.vacuum_database() {
+        let _ = state.db.log_audit_action("VACUUM_DB", "sqlite", "Ran WAL checkpoint & database VACUUM");
+        info!("[Admin Console] Executed SQLite WAL checkpoint & VACUUM");
+        return (StatusCode::OK, Json(json!({ "success": true, "message": "Database WAL truncated & vacuumed successfully" })));
+    }
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})))
+}
+
+async fn admin_db_health_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if !verify_admin_auth(&headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
+    }
+    if let Ok(health) = state.db.get_db_health() {
+        return (StatusCode::OK, Json(serde_json::to_value(health).unwrap()));
+    }
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})))
+}
+
+// Traffic Analytics Handler
+async fn admin_top_user_analytics_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if !verify_admin_auth(&headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
+    }
+    if let Ok(analytics) = state.db.get_top_user_analytics(50) {
+        return (StatusCode::OK, Json(serde_json::to_value(analytics).unwrap()));
+    }
     (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})))
 }
 
@@ -249,6 +415,7 @@ async fn admin_unlock_user_handler(
     }
 
     if let Ok(_) = state.db.unlock_user_account(&username) {
+        let _ = state.db.log_audit_action("UNLOCK_ACCOUNT", &username, "Unlocked failed login attempts");
         info!("[Admin Console] Unlocked account '{}'", username);
         return (StatusCode::OK, Json(json!({ "success": true, "unlocked_username": username })));
     }
@@ -267,6 +434,7 @@ async fn admin_revoke_device_handler(
     }
 
     if let Ok(_) = state.db.revoke_device(&username, &hardware_hash) {
+        let _ = state.db.log_audit_action("REVOKE_DEVICE", &username, &format!("Revoked device hash {}", hardware_hash));
         info!("[Admin Console] Revoked device '{}' for user '{}'", hardware_hash, username);
         return (StatusCode::OK, Json(json!({ "success": true, "revoked_device": hardware_hash, "username": username })));
     }
@@ -309,6 +477,7 @@ async fn admin_purge_offline_messages_handler(
     let cutoff = chrono::Utc::now().timestamp() - (days * 86400);
 
     if let Ok(deleted_count) = state.db.purge_stale_offline_messages(cutoff) {
+        let _ = state.db.log_audit_action("PURGE_OFFLINE_MESSAGES", "database", &format!("Deleted {} messages older than {} days", deleted_count, days));
         info!("[Admin Console] Purged {} offline messages older than {} days", deleted_count, days);
         return (StatusCode::OK, Json(json!({ "success": true, "deleted_count": deleted_count, "cutoff_days": days })));
     }
@@ -389,6 +558,7 @@ async fn admin_post_announcement_handler(
     }
 
     if let Ok(id) = state.db.create_announcement(&payload.message) {
+        let _ = state.db.log_audit_action("POST_ANNOUNCEMENT", &format!("#{}", id), &payload.message);
         info!("[Admin Console] Created broadcast announcement #{}", id);
 
         // Broadcast announcement to all connected WebSocket sessions in real-time

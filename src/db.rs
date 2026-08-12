@@ -41,6 +41,40 @@ pub struct Announcement {
     pub created_at: i64,
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct BannedIp {
+    pub ip: String,
+    pub reason: String,
+    pub banned_by: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct AuditLog {
+    pub id: i64,
+    pub action: String,
+    pub target: String,
+    pub details: String,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct UserAnalytics {
+    pub username: String,
+    pub message_count: i64,
+    pub byte_count: i64,
+    pub last_active: i64,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct DbHealth {
+    pub page_count: i64,
+    pub page_size: i64,
+    pub total_size_bytes: i64,
+    pub wal_size_bytes: u64,
+    pub integrity_check: String,
+}
+
 impl DbManager {
     pub fn new(db_path: &str) -> Result<Self> {
         let conn = Connection::open(db_path)?;
@@ -105,6 +139,28 @@ impl DbManager {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 message TEXT NOT NULL,
                 created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ip_bans (
+                ip TEXT PRIMARY KEY,
+                reason TEXT NOT NULL,
+                banned_by TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS admin_audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action TEXT NOT NULL,
+                target TEXT NOT NULL,
+                details TEXT NOT NULL,
+                timestamp INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS user_traffic_stats (
+                username TEXT PRIMARY KEY,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                byte_count INTEGER NOT NULL DEFAULT 0,
+                last_active INTEGER NOT NULL
             );",
         )?;
 
@@ -619,5 +675,145 @@ impl DbManager {
             params![older_than_timestamp],
         )?;
         Ok(deleted)
+    }
+
+    // ── IP Firewall Methods ──
+    pub fn ban_ip(&self, ip: &str, reason: &str, banned_by: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "INSERT OR REPLACE INTO ip_bans (ip, reason, banned_by, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![ip.trim(), reason, banned_by, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn unban_ip(&self, ip: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM ip_bans WHERE ip = ?1", params![ip.trim()])?;
+        Ok(())
+    }
+
+    pub fn list_banned_ips(&self) -> Result<Vec<BannedIp>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT ip, reason, banned_by, created_at FROM ip_bans ORDER BY created_at DESC")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(BannedIp {
+                ip: row.get(0)?,
+                reason: row.get(1)?,
+                banned_by: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })?;
+
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    }
+
+    pub fn is_ip_banned(&self, ip: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM ip_bans WHERE ip = ?1",
+            params![ip.trim()],
+            |r| r.get(0),
+        ).unwrap_or(0);
+        Ok(count > 0)
+    }
+
+    // ── Audit Log Methods ──
+    pub fn log_audit_action(&self, action: &str, target: &str, details: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO admin_audit_logs (action, target, details, timestamp) VALUES (?1, ?2, ?3, ?4)",
+            params![action, target, details, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_audit_logs(&self, limit: usize) -> Result<Vec<AuditLog>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, action, target, details, timestamp FROM admin_audit_logs ORDER BY timestamp DESC LIMIT ?1"
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(AuditLog {
+                id: row.get(0)?,
+                action: row.get(1)?,
+                target: row.get(2)?,
+                details: row.get(3)?,
+                timestamp: row.get(4)?,
+            })
+        })?;
+
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    }
+
+    // ── Per-User Traffic Analytics Methods ──
+    pub fn record_user_traffic_stat(&self, username: &str, bytes: u64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let clean_username = clean_user(username);
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO user_traffic_stats (username, message_count, byte_count, last_active)
+             VALUES (?1, 1, ?2, ?3)
+             ON CONFLICT(username) DO UPDATE SET
+               message_count = message_count + 1,
+               byte_count = byte_count + ?2,
+               last_active = ?3",
+            params![clean_username, bytes as i64, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_top_user_analytics(&self, limit: usize) -> Result<Vec<UserAnalytics>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT username, message_count, byte_count, last_active FROM user_traffic_stats ORDER BY byte_count DESC LIMIT ?1"
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(UserAnalytics {
+                username: row.get(0)?,
+                message_count: row.get(1)?,
+                byte_count: row.get(2)?,
+                last_active: row.get(3)?,
+            })
+        })?;
+
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    }
+
+    // ── Database Maintenance & Vacuum ──
+    pub fn vacuum_database(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")?;
+        Ok(())
+    }
+
+    pub fn get_db_health(&self) -> Result<DbHealth> {
+        let conn = self.conn.lock().unwrap();
+        let page_count: i64 = conn.query_row("PRAGMA page_count", [], |r| r.get(0)).unwrap_or(0);
+        let page_size: i64 = conn.query_row("PRAGMA page_size", [], |r| r.get(0)).unwrap_or(0);
+        let total_size_bytes = page_count * page_size;
+        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap_or_else(|_| "ok".into());
+
+        Ok(DbHealth {
+            page_count,
+            page_size,
+            total_size_bytes,
+            wal_size_bytes: 0,
+            integrity_check: integrity,
+        })
     }
 }

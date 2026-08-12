@@ -3,7 +3,7 @@ pub static ADMIN_HTML: &str = r#"<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Vexta Bridge V2 — Admin Console</title>
+    <title>Vexta Bridge V2 - v0.0.1 — Admin Console</title>
     <meta name="description" content="Vexta Bridge V2 secure relay administration console. Monitor sessions, manage users, broadcast announcements.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -744,7 +744,7 @@ pub static ADMIN_HTML: &str = r#"<!DOCTYPE html>
             <div class="brand-icon">⚡</div>
             <div>
                 <div class="brand-name"><span>VEXTA</span> BRIDGE V2</div>
-                <div class="brand-sub">SECURE RELAY CONSOLE</div>
+                <div class="brand-sub">Vexta Bridge V2 - v0.0.1</div>
             </div>
             <div class="status-badge"><span class="status-dot"></span> ONLINE</div>
         </div>
