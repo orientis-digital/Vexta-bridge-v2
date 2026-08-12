@@ -40,7 +40,7 @@ async fn main() {
         .init();
 
     println!("====================================================");
-    println!(" [Vexta V2 Bridge] Server Logging Initialized (INFO)");
+    println!(" [Vexta Bridge V2 - v0.0.1] Server Logging Initialized (INFO)");
     println!("====================================================");
 
     // 2. Initialize Shared App State (SQLite DB + Ed25519 Server Crypto)
@@ -114,12 +114,20 @@ async fn main() {
 
     let app = app.layer(cors).with_state(state);
 
-    // 5. Start TCP Server on Port 8000
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8000));
-    info!("🚀 Vexta V2 Rust Bridge listening on http://{}", addr);
+    // 5. Start TCP Server on Configured Port (Default 8000)
+    let port = std::env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(8000);
+    let host = std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".into());
+    let addr: SocketAddr = format!("{}:{}", host, port)
+        .parse()
+        .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], port)));
+
+    info!("🚀 Vexta Bridge V2 - v0.0.1 listening on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
 }
 
 fn get_admin_secret_token() -> String {

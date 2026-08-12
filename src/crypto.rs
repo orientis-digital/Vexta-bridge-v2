@@ -3,6 +3,7 @@ use rand::rngs::OsRng;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 
+#[allow(dead_code)]
 pub struct ServerCrypto {
     pub signing_key: SigningKey,
     pub verifying_key: VerifyingKey,

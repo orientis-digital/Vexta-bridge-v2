@@ -75,6 +75,7 @@ pub struct DbHealth {
     pub integrity_check: String,
 }
 
+#[allow(dead_code)]
 impl DbManager {
     pub fn new(db_path: &str) -> Result<Self> {
         let conn = Connection::open(db_path)?;
