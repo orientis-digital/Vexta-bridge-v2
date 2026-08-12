@@ -8,6 +8,7 @@ mod ws;
 use axum::{
     extract::{ws::Message, Path, Query, State},
     http::{HeaderMap, StatusCode},
+    middleware,
     response::{sse::{Event, Sse}, Html, IntoResponse, Json},
     routing::{delete, get, post},
     Router,
@@ -112,7 +113,10 @@ async fn main() {
             .route("/admin/", get(admin_ui_handler))
     };
 
-    let app = app.layer(cors).with_state(state);
+    let app = app
+        .layer(cors)
+        .layer(middleware::from_fn(add_security_headers))
+        .with_state(state);
 
     // 5. Start TCP Server on Configured Port (Default 8000)
     let port = std::env::var("PORT")
@@ -130,19 +134,42 @@ async fn main() {
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
 }
 
+async fn add_security_headers(req: axum::extract::Request, next: axum::middleware::Next) -> impl IntoResponse {
+    let mut response = next.run(req).await;
+    let headers = response.headers_mut();
+    headers.insert("x-content-type-options", "nosniff".parse().unwrap());
+    headers.insert("x-frame-options", "SAMEORIGIN".parse().unwrap());
+    headers.insert("x-xss-protection", "1; mode=block".parse().unwrap());
+    headers.insert("referrer-policy", "strict-origin-when-cross-origin".parse().unwrap());
+    response
+}
+
 fn get_admin_secret_token() -> String {
     std::env::var("ADMIN_SECRET_TOKEN")
         .or_else(|_| std::env::var("ADMIN_SECRET"))
         .unwrap_or_else(|_| "vexta_admin_secret_key_2026".to_string())
 }
 
-// Check Admin Secret Token Header
+fn constant_time_compare(a: &str, b: &str) -> bool {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    if a_bytes.len() != b_bytes.len() {
+        return false;
+    }
+    let mut result = 0u8;
+    for (x, y) in a_bytes.iter().zip(b_bytes.iter()) {
+        result |= x ^ y;
+    }
+    result == 0
+}
+
+// Check Admin Secret Token Header with constant-time timing-attack mitigation
 fn verify_admin_auth(headers: &HeaderMap) -> bool {
     let expected_secret = get_admin_secret_token();
     if let Some(token) = headers.get("x-admin-secret").or_else(|| headers.get("authorization")) {
         if let Ok(str_val) = token.to_str() {
             let clean_val = str_val.trim_start_matches("Bearer ").trim();
-            return clean_val == expected_secret;
+            return constant_time_compare(clean_val, &expected_secret);
         }
     }
     false

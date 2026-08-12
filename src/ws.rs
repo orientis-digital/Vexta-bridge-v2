@@ -33,7 +33,9 @@ pub async fn ws_handler(
         return (StatusCode::SERVICE_UNAVAILABLE, "Server is currently under emergency maintenance").into_response();
     }
 
-    ws.on_upgrade(move |socket| handle_socket(socket, state, client_ip))
+    ws.max_message_size(1024 * 1024)
+      .max_frame_size(1024 * 1024)
+      .on_upgrade(move |socket| handle_socket(socket, state, client_ip))
 }
 
 fn clean_user(u: &str) -> String {
