@@ -5,16 +5,17 @@ services:
       dockerfile: Dockerfile
     container_name: vexta-bridge-v2
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     env_file:
       - path: .env
         required: false
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       - RUST_LOG=${RUST_LOG:-info}
       - DATABASE_PATH=/app/data/vexta_bridge_v2.db
-      - ADMIN_SECRET_TOKEN=${ADMIN_SECRET_TOKEN:-vexta_admin_secret_key_2026}
-      - ADMIN_SECRET=${ADMIN_SECRET:-${ADMIN_SECRET_TOKEN:-vexta_admin_secret_key_2026}}
+      - ADMIN_SECRET=${ADMIN_SECRET:-${ADMIN_SECRET_TOKEN}}
     # Admin UI accessible at: http://localhost:8000/admin (Default secret: vexta_admin_secret_key_2026)
     volumes:
       - vexta_bridge_data:/app/data

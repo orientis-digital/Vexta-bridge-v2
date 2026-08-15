@@ -34,7 +34,9 @@ RUN cargo build --release
 # ------------------------------------------------------------------------------
 FROM alpine:latest
 
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata \
+    && addgroup -g 10001 -S vexta \
+    && adduser -u 10001 -S vexta -G vexta
 
 WORKDIR /app
 
@@ -43,6 +45,11 @@ COPY --from=builder /app/target/release/vexta-bridge-v2 /app/vexta-bridge-v2
 
 # Copy compiled React Admin UI static bundle
 COPY --from=ui-builder /app/admin-ui/dist /app/admin-ui/dist
+
+# Create data directory and set permissions for non-root user
+RUN mkdir -p /app/data && chown -R vexta:vexta /app
+
+USER vexta:vexta
 
 # Persistent volume for SQLite WAL database
 VOLUME ["/app/data"]
