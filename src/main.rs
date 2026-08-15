@@ -23,7 +23,7 @@ use std::net::SocketAddr;
 
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[tokio::main]
@@ -147,7 +147,10 @@ async fn add_security_headers(req: axum::extract::Request, next: axum::middlewar
 fn get_admin_secret_token() -> String {
     std::env::var("ADMIN_SECRET_TOKEN")
         .or_else(|_| std::env::var("ADMIN_SECRET"))
-        .unwrap_or_else(|_| "vexta_admin_secret_key_2026".to_string())
+        .unwrap_or_else(|_| {
+            warn!("[SECURITY WARNING] ADMIN_SECRET environment variable is NOT set! Using default fallback key. Please configure ADMIN_SECRET in production!");
+            "vexta_admin_secret_key_2026".to_string()
+        })
 }
 
 fn constant_time_compare(a: &str, b: &str) -> bool {
