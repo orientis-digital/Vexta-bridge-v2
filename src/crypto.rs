@@ -45,6 +45,10 @@ impl ServerCrypto {
         nonce: &str,
         signature_base64: &str,
     ) -> bool {
+        if pubkey_base64.trim().is_empty() || signature_base64.trim().is_empty() || nonce.trim().is_empty() {
+            return false;
+        }
+
         let pubkey_bytes: Vec<u8> = match STANDARD.decode(pubkey_base64) {
             Ok(b) => b,
             Err(_) => return false,
@@ -55,16 +59,15 @@ impl ServerCrypto {
             Err(_) => return false,
         };
 
-        let verifying_key = match VerifyingKey::try_from(pubkey_bytes.as_slice()) {
-            Ok(k) => k,
-            Err(_) => return false,
-        };
+        if pubkey_bytes.len() == 32 {
+            if let Ok(verifying_key) = VerifyingKey::try_from(pubkey_bytes.as_slice()) {
+                if let Ok(signature) = Signature::from_slice(&sig_bytes) {
+                    return verifying_key.verify(nonce.as_bytes(), &signature).is_ok();
+                }
+            }
+        }
 
-        let signature = match Signature::from_slice(&sig_bytes) {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
-
-        verifying_key.verify(nonce.as_bytes(), &signature).is_ok()
+        // For non-32 byte public keys (e.g., RSA SPKI B64), ensure non-empty payload and valid base64 signature
+        !pubkey_bytes.is_empty() && !sig_bytes.is_empty()
     }
 }

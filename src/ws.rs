@@ -116,6 +116,17 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, _client_ip: Strin
                     } => {
                         let clean_username = clean_user(&username);
                         info!("[WS Bridge V2] REGISTER packet received for user '{}' (device: {:?})", clean_username, device_name);
+
+                        // Check if username is already registered to prevent key hijacking
+                        if let Ok(Some(_existing)) = state.db.get_user(&clean_username) {
+                            info!("[WS Bridge V2] REGISTER rejected for user '{}': Username already exists", clean_username);
+                            let resp = BridgeFrame::AuthError {
+                                reason: "Username already registered. Please authenticate via AUTH_RESPONSE.".into(),
+                            };
+                            let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                            break;
+                        }
+
                         let user = VextaUser {
                             username: clean_username.clone(),
                             ed25519_pubkey: ed25519_pubkey.clone(),
@@ -159,23 +170,28 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, _client_ip: Strin
                     } => {
                         let clean_username = clean_user(&username);
                         info!("[WS Bridge V2] AUTH_RESPONSE login attempt for user '{}'", clean_username);
-                        if let Some(ref n) = nonce {
-                            if n != &nonce_hex {
-                                info!("[WS Bridge V2] Nonce mismatch for user '{}': sent={}, expected={}", clean_username, n, nonce_hex);
-                            }
-                        }
 
-                        let valid_sig = if let (Some(n), Some(s)) = (&nonce, &signature) {
-                            ServerCrypto::verify_client_signature(&ed25519_pubkey, n, s)
-                        } else {
-                            true
+                        let existing_user = state.db.get_user(&clean_username).unwrap_or(None);
+
+                        // Use stored public key if registered to prevent key spoofing
+                        let target_pubkey = match &existing_user {
+                            Some(u) => u.ed25519_pubkey.clone(),
+                            None => ed25519_pubkey.clone(),
                         };
 
-                        if valid_sig || true {
+                        let nonce_matches = nonce.as_deref() == Some(&nonce_hex);
+
+                        let valid_sig = if let (Some(n), Some(s)) = (&nonce, &signature) {
+                            nonce_matches && ServerCrypto::verify_client_signature(&target_pubkey, n, s)
+                        } else {
+                            false
+                        };
+
+                        if valid_sig {
                             let user = VextaUser {
                                 username: clean_username.clone(),
-                                ed25519_pubkey: ed25519_pubkey.clone(),
-                                created_at: chrono::Utc::now().timestamp(),
+                                ed25519_pubkey: target_pubkey.clone(),
+                                created_at: existing_user.as_ref().map(|u| u.created_at).unwrap_or_else(|| chrono::Utc::now().timestamp()),
                                 is_provisioned: false,
                                 passcode: None,
                                 registration_lock_hash: None,
@@ -220,9 +236,9 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, _client_ip: Strin
                                 }
                             }
                         } else {
-                            info!("[WS Bridge V2] AUTH_FAILED for user '{}': Signature verification failed", clean_username);
+                            info!("[WS Bridge V2] AUTH_FAILED for user '{}': Signature or nonce verification failed", clean_username);
                             let resp = BridgeFrame::AuthError {
-                                reason: "Signature verification failed".into(),
+                                reason: "Signature or nonce verification failed".into(),
                             };
                             let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
                             break;
