@@ -669,6 +669,44 @@ impl DbManager {
         Ok(())
     }
 
+    pub fn record_failed_auth(&self, username: &str) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let clean_username = clean_user(username);
+        let now_ts = chrono::Utc::now().timestamp();
+
+        let attempts: i64 = conn.query_row(
+            "SELECT auth_attempts FROM users WHERE LOWER(LTRIM(username, '@')) = ?1",
+            params![clean_username],
+            |r| r.get(0),
+        ).unwrap_or(0) + 1;
+
+        // Lock account for 15 minutes (900 seconds) if 5 consecutive failures occur
+        let locked_until = if attempts >= 5 {
+            Some(now_ts + 900)
+        } else {
+            None
+        };
+
+        conn.execute(
+            "UPDATE users SET auth_attempts = ?1, locked_until = COALESCE(?2, locked_until) WHERE LOWER(LTRIM(username, '@')) = ?3",
+            params![attempts, locked_until, clean_username],
+        )?;
+
+        Ok(attempts)
+    }
+
+    pub fn is_user_locked(&self, username: &str) -> bool {
+        let conn = self.conn.lock().unwrap();
+        let clean_username = clean_user(username);
+        let now_ts = chrono::Utc::now().timestamp();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM users WHERE LOWER(LTRIM(username, '@')) = ?1 AND (locked_until > ?2 OR auth_attempts >= 5)",
+            params![clean_username, now_ts],
+            |r| r.get(0),
+        ).unwrap_or(0);
+        count > 0
+    }
+
     pub fn purge_stale_offline_messages(&self, older_than_timestamp: i64) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
         let deleted = conn.execute(

@@ -171,6 +171,16 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, _client_ip: Strin
                         let clean_username = clean_user(&username);
                         info!("[WS Bridge V2] AUTH_RESPONSE login attempt for user '{}'", clean_username);
 
+                        // Check if user account is locked due to brute force protection
+                        if state.db.is_user_locked(&clean_username) {
+                            info!("[WS Bridge V2] AUTH_FAILED for user '{}': Account is locked out", clean_username);
+                            let resp = BridgeFrame::AuthError {
+                                reason: "Account is temporarily locked due to multiple failed authentication attempts.".into(),
+                            };
+                            let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                            break;
+                        }
+
                         let existing_user = state.db.get_user(&clean_username).unwrap_or(None);
 
                         // Use stored public key if registered to prevent key spoofing
@@ -236,9 +246,10 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, _client_ip: Strin
                                 }
                             }
                         } else {
-                            info!("[WS Bridge V2] AUTH_FAILED for user '{}': Signature or nonce verification failed", clean_username);
+                            let attempts = state.db.record_failed_auth(&clean_username).unwrap_or(1);
+                            info!("[WS Bridge V2] AUTH_FAILED for user '{}': Signature or nonce verification failed (attempt #{})", clean_username, attempts);
                             let resp = BridgeFrame::AuthError {
-                                reason: "Signature or nonce verification failed".into(),
+                                reason: format!("Signature or nonce verification failed (attempt #{}/5)", attempts),
                             };
                             let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
                             break;
