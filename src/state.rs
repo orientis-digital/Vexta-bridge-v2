@@ -4,8 +4,7 @@ use dashmap::DashMap;
 use axum::extract::ws::Message;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
-
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 pub type Tx = UnboundedSender<Message>;
 
@@ -16,8 +15,9 @@ pub const SERVER_NAME: &str = "Vexta Bridge V2 - v0.0.1";
 pub struct AppState {
     pub db: DbManager,
     pub crypto: Arc<ServerCrypto>,
-    // Lock-free lockless user routing table: username -> channel sender
-    pub active_sessions: Arc<DashMap<String, Tx>>,
+    // Multi-device concurrent routing table: username -> DashMap<conn_id, Tx>
+    pub active_sessions: Arc<DashMap<String, DashMap<usize, Tx>>>,
+    pub next_conn_id: Arc<AtomicUsize>,
     pub start_time: i64,
     pub total_messages_relayed: Arc<AtomicU64>,
     pub total_bytes_relayed: Arc<AtomicU64>,
@@ -31,6 +31,7 @@ impl AppState {
         let db = DbManager::new(db_path).expect("Failed to initialize SQLite database");
         let crypto = Arc::new(ServerCrypto::new_or_generate());
         let active_sessions = Arc::new(DashMap::new());
+        let next_conn_id = Arc::new(AtomicUsize::new(1));
         let start_time = chrono::Utc::now().timestamp();
         let total_messages_relayed = Arc::new(AtomicU64::new(0));
         let total_bytes_relayed = Arc::new(AtomicU64::new(0));
@@ -49,6 +50,7 @@ impl AppState {
             db,
             crypto,
             active_sessions,
+            next_conn_id,
             start_time,
             total_messages_relayed,
             total_bytes_relayed,
@@ -97,8 +99,9 @@ impl AppState {
         let _ = self.broadcast_tx.send(event_json.to_string());
     }
 
-    pub fn register_session(&self, username: String, tx: Tx) {
-        self.active_sessions.insert(username.clone(), tx);
+    pub fn register_session(&self, username: String, conn_id: usize, tx: Tx) {
+        let user_sessions = self.active_sessions.entry(username.clone()).or_insert_with(DashMap::new);
+        user_sessions.insert(conn_id, tx);
         self.emit_event(&serde_json::json!({
             "event": "session_connected",
             "username": username,
@@ -106,26 +109,52 @@ impl AppState {
         }).to_string());
     }
 
-    pub fn unregister_session(&self, username: &str) {
-        if self.active_sessions.remove(username).is_some() {
-            self.emit_event(&serde_json::json!({
-                "event": "session_disconnected",
-                "username": username,
-                "active_count": self.active_sessions_count(),
-            }).to_string());
+    pub fn unregister_session(&self, username: &str, conn_id: usize) {
+        let mut should_remove = false;
+        if let Some(user_sessions) = self.active_sessions.get(username) {
+            user_sessions.remove(&conn_id);
+            if user_sessions.is_empty() {
+                should_remove = true;
+            }
         }
+        if should_remove {
+            self.active_sessions.remove(username);
+        }
+        self.emit_event(&serde_json::json!({
+            "event": "session_disconnected",
+            "username": username,
+            "active_count": self.active_sessions_count(),
+        }).to_string());
     }
 
     pub fn send_to_user(&self, recipient: &str, msg: Message) -> bool {
-        if let Some(tx) = self.active_sessions.get(recipient) {
-            tx.send(msg).is_ok()
-        } else {
-            false
+        let mut delivered = false;
+        if let Some(user_sessions) = self.active_sessions.get(recipient) {
+            for tx in user_sessions.iter() {
+                if tx.send(msg.clone()).is_ok() {
+                    delivered = true;
+                }
+            }
         }
+        delivered
+    }
+
+    pub fn send_to_user_except(&self, recipient: &str, except_conn_id: usize, msg: Message) -> bool {
+        let mut delivered = false;
+        if let Some(user_sessions) = self.active_sessions.get(recipient) {
+            for kv in user_sessions.iter() {
+                if *kv.key() != except_conn_id {
+                    if kv.value().send(msg.clone()).is_ok() {
+                        delivered = true;
+                    }
+                }
+            }
+        }
+        delivered
     }
 
     pub fn active_sessions_count(&self) -> usize {
-        self.active_sessions.len()
+        self.active_sessions.iter().map(|kv| kv.value().len()).sum()
     }
 
     pub fn list_active_usernames(&self) -> Vec<String> {
@@ -169,5 +198,3 @@ impl AppState {
         )
     }
 }
-
-

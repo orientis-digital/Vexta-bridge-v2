@@ -550,7 +550,7 @@ async fn admin_delete_user_handler(
     }
 
     let _ = state.db.delete_user(&username);
-    state.unregister_session(&username);
+    state.disconnect_session(&username);
     info!("[Admin Console] Deleted user '{}'", username);
 
     (StatusCode::OK, Json(json!({"success": true, "deleted_username": username})))
@@ -614,9 +614,10 @@ async fn admin_post_announcement_handler(
         });
 
         let frame_str = broadcast_frame.to_string();
-        for item in state.active_sessions.iter() {
-            let tx = item.value();
-            let _ = tx.send(Message::Text(frame_str.clone()));
+        for user_entry in state.active_sessions.iter() {
+            for tx in user_entry.value().iter() {
+                let _ = tx.send(Message::Text(frame_str.clone()));
+            }
         }
 
         state.emit_event(&json!({

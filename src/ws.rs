@@ -47,6 +47,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, _client_ip: Strin
 
     // Channel for pushing messages to this client session
     let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
+    let conn_id = state.next_conn_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     // Spawn forwarding task: rx -> ws_sender
     tokio::spawn(async move {
@@ -149,7 +150,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, _client_ip: Strin
                         }
 
                         authenticated_username = Some(clean_username.clone());
-                        state.register_session(clean_username.clone(), tx.clone());
+                        state.register_session(clean_username.clone(), conn_id, tx.clone());
 
                         info!("[WS Bridge V2] User '{}' registered & authenticated cleanly", clean_username);
 
@@ -220,7 +221,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, _client_ip: Strin
                             }
 
                             authenticated_username = Some(clean_username.clone());
-                            state.register_session(clean_username.clone(), tx.clone());
+                            state.register_session(clean_username.clone(), conn_id, tx.clone());
 
                             info!("[WS Bridge V2] User '{}' authenticated cleanly", clean_username);
 
@@ -291,7 +292,10 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, _client_ip: Strin
                         let text_json = serde_json::to_string(&blind_frame).unwrap();
                         state.record_user_traffic(&sender, text_json.len() as u64);
 
-                        let delivered = state.send_to_user(&clean_recipient, Message::Text(text_json));
+                        let delivered = state.send_to_user(&clean_recipient, Message::Text(text_json.clone()));
+                        // Multi-device self-sync: replicate outbound message to sender's other linked devices
+                        let _ = state.send_to_user_except(&sender, conn_id, Message::Text(text_json));
+
                         if !delivered {
                             let _ = state.db.enqueue_offline_message(&clean_recipient, &sender, &ciphertext, now, is_grp);
                             info!("[WS Bridge V2] Queued offline message: '{}' -> '{}' (is_group={})", sender, clean_recipient, is_grp);
@@ -589,8 +593,8 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, _client_ip: Strin
     }
 
     if let Some(user) = authenticated_username {
-        state.unregister_session(&user);
-        info!("[WS Bridge V2] Connection closed for user '{}'", user);
+        state.unregister_session(&user, conn_id);
+        info!("[WS Bridge V2] Connection #{} closed for user '{}'. Remaining active sessions: {}", conn_id, user, state.active_sessions_count());
     } else {
         info!("[WS Bridge V2] Unauthenticated WebSocket connection closed.");
     }
