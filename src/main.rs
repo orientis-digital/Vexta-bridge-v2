@@ -63,7 +63,9 @@ async fn main() {
         .route("/ws/chat/", get(ws::ws_handler))
         .route("/ws/chat", get(ws::ws_handler))
         
-        // Public REST Endpoints
+        // Public REST Endpoints & Healthchecks
+        .route("/health", get(health_handler))
+        .route("/api/health", get(health_handler))
         .route("/api/check-account/:username", get(check_account_handler))
         .route("/api/announcements/", get(public_announcements_handler))
         .route("/api/announcements", get(public_announcements_handler))
@@ -711,4 +713,9 @@ async fn public_announcements_handler(
             "created_at": chrono::Utc::now().timestamp(),
         }
     ]))
+}
+
+// Fast Health Check Endpoint
+async fn health_handler() -> impl IntoResponse {
+    (StatusCode::OK, Json(json!({ "status": "ok", "service": "vexta-bridge-v2", "version": crate::state::SERVER_VERSION })))
 }
