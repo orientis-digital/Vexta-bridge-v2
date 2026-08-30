@@ -16,6 +16,35 @@ This document specifies the complete WebSocket protocol and REST API endpoints s
 
 ## 2. Public REST API Endpoints
 
+### `GET /health` (Aliases: `/api/health`, `/api/v1/health`)
+Returns live bridge health status, database integrity, uptime, active session count, and telemetry.
+
+- **Response `200 OK` (Healthy / Maintenance)**:
+  ```json
+  {
+    "status": "ok",
+    "service": "vexta-bridge-v2",
+    "version": "v0.0.1",
+    "server_name": "Vexta Bridge V2 - v0.0.1",
+    "uptime_seconds": 12450,
+    "timestamp": 1756598400,
+    "active_ws_sessions": 3,
+    "maintenance_mode": false,
+    "database": {
+      "status": "connected",
+      "integrity": "ok",
+      "size_bytes": 65536,
+      "wal_size_bytes": 32768
+    },
+    "telemetry": {
+      "total_messages_relayed": 450,
+      "total_bytes_relayed": 124800
+    }
+  }
+  ```
+- **Response `503 Service Unavailable`**:
+  Returned if the database connection fails or SQLite integrity is compromised.
+
 ### `GET /api/check-account/:username`
 Checks whether a given user account exists and returns its registered Ed25519 public key.
 

@@ -22,7 +22,7 @@ services:
     networks:
       - vexta-v2-net
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:8000/health || exit 1"]
+      test: ["CMD-SHELL", "curl -f -s http://127.0.0.1:8000/health > /dev/null || wget -q -O - http://127.0.0.1:8000/health > /dev/null || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 3

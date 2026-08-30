@@ -65,7 +65,11 @@ async fn main() {
         
         // Public REST Endpoints & Healthchecks
         .route("/health", get(health_handler))
+        .route("/health/", get(health_handler))
         .route("/api/health", get(health_handler))
+        .route("/api/health/", get(health_handler))
+        .route("/api/v1/health", get(health_handler))
+        .route("/api/v1/health/", get(health_handler))
         .route("/api/check-account/:username", get(check_account_handler))
         .route("/api/announcements/", get(public_announcements_handler))
         .route("/api/announcements", get(public_announcements_handler))
@@ -715,7 +719,89 @@ async fn public_announcements_handler(
     ]))
 }
 
-// Fast Health Check Endpoint
-async fn health_handler() -> impl IntoResponse {
-    (StatusCode::OK, Json(json!({ "status": "ok", "service": "vexta-bridge-v2", "version": crate::state::SERVER_VERSION })))
+// Comprehensive Health Check Endpoint
+async fn health_handler(
+    State(state): State<AppState>,
+) -> (StatusCode, Json<Value>) {
+    let db_ping_ok = state.db.ping().is_ok();
+    let db_health = state.db.get_db_health().ok();
+    let maintenance = state.is_maintenance_enabled();
+    let uptime = chrono::Utc::now().timestamp() - state.start_time;
+    let active_sessions = state.active_sessions_count();
+    let (total_msgs, total_bytes) = state.get_traffic_stats();
+
+    let is_healthy = db_ping_ok;
+    let status_str = if !is_healthy {
+        "unhealthy"
+    } else if maintenance {
+        "maintenance"
+    } else {
+        "ok"
+    };
+
+    let http_status = if is_healthy {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    let payload = json!({
+        "status": status_str,
+        "service": "vexta-bridge-v2",
+        "version": state::SERVER_VERSION,
+        "server_name": state::SERVER_NAME,
+        "uptime_seconds": uptime,
+        "timestamp": chrono::Utc::now().timestamp(),
+        "active_ws_sessions": active_sessions,
+        "maintenance_mode": maintenance,
+        "database": {
+            "status": if db_ping_ok { "connected" } else { "error" },
+            "integrity": db_health.as_ref().map(|h| h.integrity_check.as_str()).unwrap_or("unknown"),
+            "size_bytes": db_health.as_ref().map(|h| h.total_size_bytes).unwrap_or(0),
+            "wal_size_bytes": db_health.as_ref().map(|h| h.wal_size_bytes).unwrap_or(0),
+        },
+        "telemetry": {
+            "total_messages_relayed": total_msgs,
+            "total_bytes_relayed": total_bytes,
+        }
+    });
+
+    (http_status, Json(payload))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_health_handler_normal_and_maintenance() {
+        let temp_dir = std::env::temp_dir();
+        let db_file = temp_dir.join(format!("test_health_handler_{}.db", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let db_path = db_file.to_str().unwrap();
+
+        let state = AppState::new(db_path);
+
+        // Normal health check
+        let (status, Json(val)) = health_handler(State(state.clone())).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(val["status"], "ok");
+        assert_eq!(val["service"], "vexta-bridge-v2");
+        assert_eq!(val["version"], state::SERVER_VERSION);
+        assert_eq!(val["database"]["status"], "connected");
+        assert_eq!(val["database"]["integrity"], "ok");
+        assert_eq!(val["maintenance_mode"], false);
+
+        // Maintenance mode health check
+        state.set_maintenance(true);
+        let (m_status, Json(m_val)) = health_handler(State(state.clone())).await;
+        assert_eq!(m_status, StatusCode::OK);
+        assert_eq!(m_val["status"], "maintenance");
+        assert_eq!(m_val["maintenance_mode"], true);
+
+        // Cleanup
+        let _ = std::fs::remove_file(&db_file);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path));
+    }
+}
+

@@ -9,6 +9,7 @@ fn clean_user(u: &str) -> String {
 #[derive(Clone)]
 pub struct DbManager {
     conn: Arc<Mutex<Connection>>,
+    db_path: String,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -178,6 +179,7 @@ impl DbManager {
 
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            db_path: db_path.to_string(),
         })
     }
 
@@ -299,9 +301,8 @@ impl DbManager {
         let users_with_prekey: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE pre_key IS NOT NULL AND LENGTH(pre_key) > 0", [], |r| r.get(0)).unwrap_or(0);
         let users_with_offline_msgs: i64 = conn.query_row("SELECT COUNT(DISTINCT recipient) FROM offline_messages", [], |r| r.get(0)).unwrap_or(0);
 
-        let db_path = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "vexta_bridge_v2.db".into());
-        let database_size_bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
-        let wal_path = format!("{}-wal", db_path);
+        let database_size_bytes = std::fs::metadata(&self.db_path).map(|m| m.len()).unwrap_or(0);
+        let wal_path = format!("{}-wal", self.db_path);
         let wal_size_bytes = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
 
         Ok(AdminStats {
@@ -834,6 +835,12 @@ impl DbManager {
     }
 
     // ── Database Maintenance & Vacuum ──
+    pub fn ping(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row("SELECT 1", [], |_| Ok(()))?;
+        Ok(())
+    }
+
     pub fn vacuum_database(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")?;
@@ -847,12 +854,47 @@ impl DbManager {
         let total_size_bytes = page_count * page_size;
         let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap_or_else(|_| "ok".into());
 
+        let wal_path = format!("{}-wal", self.db_path);
+        let wal_size_bytes = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
+
         Ok(DbHealth {
             page_count,
             page_size,
             total_size_bytes,
-            wal_size_bytes: 0,
+            wal_size_bytes,
             integrity_check: integrity,
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_db_ping_and_health() {
+        let temp_dir = std::env::temp_dir();
+        let db_file = temp_dir.join(format!("test_health_{}.db", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let db_path = db_file.to_str().unwrap();
+
+        let db = DbManager::new(db_path).expect("Failed to create test DB");
+        assert!(db.ping().is_ok());
+
+        let health = db.get_db_health().expect("Failed to get DB health");
+        assert_eq!(health.integrity_check, "ok");
+        assert!(health.page_size > 0);
+        assert!(health.page_count > 0);
+        assert!(health.total_size_bytes > 0);
+
+        assert!(db.vacuum_database().is_ok());
+
+        let stats = db.get_admin_stats().expect("Failed to get admin stats");
+        assert_eq!(stats.total_users, 0);
+
+        // Cleanup
+        let _ = std::fs::remove_file(&db_file);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path));
+    }
+}
+

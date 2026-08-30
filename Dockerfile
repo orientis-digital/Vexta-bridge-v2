@@ -34,7 +34,7 @@ RUN cargo build --release
 # ------------------------------------------------------------------------------
 FROM alpine:latest
 
-RUN apk add --no-cache ca-certificates tzdata \
+RUN apk add --no-cache ca-certificates tzdata curl \
     && addgroup -g 10001 -S vexta \
     && adduser -u 10001 -S vexta -G vexta
 
@@ -61,6 +61,6 @@ EXPOSE 8000
 
 # Health check
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:8000/health || exit 1
+  CMD curl -f -s http://127.0.0.1:8000/health > /dev/null || exit 1
 
 ENTRYPOINT ["/app/vexta-bridge-v2"]
