@@ -159,7 +159,9 @@ Sent by an existing account to authenticate:
   "signature": "m1B90z...",
   "passcode": "<optional>",
   "hardware_hash": "a1b2c3...",
-  "device_name": "Linux Desktop"
+  "device_name": "Linux Desktop",
+  "app_version": "0.0.13",
+  "build_number": 15
 }
 ```
 
@@ -172,7 +174,9 @@ Sent by a new account during initial setup:
   "public_key": "A93f72...",
   "signature": "m1B90z...",
   "hardware_hash": "a1b2c3...",
-  "device_name": "Linux Desktop"
+  "device_name": "Linux Desktop",
+  "app_version": "0.0.13",
+  "build_number": 15
 }
 ```
 
@@ -186,11 +190,37 @@ Confirms successful authentication:
 ```
 
 #### `AUTH_ERROR` (Server -> Client)
-Returned if authentication or signature verification fails:
+Returned if authentication, version support, or signature verification fails:
 ```json
 {
   "type": "AUTH_ERROR",
   "reason": "Invalid nonce signature"
+}
+```
+
+#### `UPDATE_REQUIRED` (Server -> Client)
+Pushed when the client's version is below the bridge's minimum supported version (`MIN_CLIENT_VERSION` / `MIN_BUILD_NUMBER`):
+```json
+{
+  "type": "UPDATE_REQUIRED",
+  "current_version": "0.0.10",
+  "min_version": "0.0.13+15",
+  "latest_version": "0.0.13+15",
+  "download_url": "https://downloads.nexusec.space/vexta",
+  "is_mandatory": true,
+  "message": "Your Vexta client (0.0.10) is outdated and no longer supported. Please update to 0.0.13+15 or newer to continue."
+}
+```
+
+#### `UPDATE_AVAILABLE` (Server -> Client)
+Pushed during successful login when a newer client release exists (`LATEST_CLIENT_VERSION`):
+```json
+{
+  "type": "UPDATE_AVAILABLE",
+  "current_version": "0.0.13+15",
+  "latest_version": "0.0.14+16",
+  "download_url": "https://downloads.nexusec.space/vexta",
+  "message": "A new version of Vexta (0.0.14+16) is available. Update now for performance and security enhancements."
 }
 ```
 

@@ -78,6 +78,8 @@ pub enum BridgeFrame {
         os_version: Option<String>,
         device_type: Option<String>,
         app_version: Option<String>,
+        #[serde(default)]
+        build_number: Option<u32>,
     },
     #[serde(rename = "REGISTER")]
     Register {
@@ -92,6 +94,8 @@ pub enum BridgeFrame {
         os_version: Option<String>,
         device_type: Option<String>,
         app_version: Option<String>,
+        #[serde(default)]
+        build_number: Option<u32>,
     },
     #[serde(rename = "AUTH_SUCCESS")]
     AuthSuccess {
@@ -100,6 +104,24 @@ pub enum BridgeFrame {
     #[serde(rename = "AUTH_ERROR")]
     AuthError {
         reason: String,
+    },
+    #[serde(rename = "UPDATE_REQUIRED")]
+    UpdateRequired {
+        current_version: String,
+        min_version: String,
+        latest_version: String,
+        #[serde(default)]
+        download_url: Option<String>,
+        is_mandatory: bool,
+        message: String,
+    },
+    #[serde(rename = "UPDATE_AVAILABLE")]
+    UpdateAvailable {
+        current_version: String,
+        latest_version: String,
+        #[serde(default)]
+        download_url: Option<String>,
+        message: String,
     },
     #[serde(rename = "PING")]
     Ping {

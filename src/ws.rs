@@ -115,10 +115,53 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                         ed25519_pubkey,
                         hardware_hash,
                         device_name,
+                        app_version,
+                        build_number,
                         ..
                     } => {
                         let clean_username = clean_user(&username);
-                        info!("[WS AUTH] REGISTER request for '@{}' from conn #{} (Device: {:?}, HW Hash: {:?})", clean_username, conn_id, device_name, hardware_hash);
+                        info!("[WS AUTH] REGISTER request for '@{}' from conn #{} (Device: {:?}, HW Hash: {:?}, Version: {:?}, Build: {:?})", clean_username, conn_id, device_name, hardware_hash, app_version, build_number);
+
+                        // Version Policy Validation
+                        match state.evaluate_version_policy(app_version.as_deref(), build_number) {
+                            crate::state::VersionCheckResult::OutdatedMandatory {
+                                current_version,
+                                min_version,
+                                latest_version,
+                                download_url,
+                                message,
+                            } => {
+                                warn!("[WS AUTH] REGISTER rejected for '@{}' on conn #{}: Outdated client version {} < min {}", clean_username, conn_id, current_version, min_version);
+                                let update_frame = BridgeFrame::UpdateRequired {
+                                    current_version,
+                                    min_version,
+                                    latest_version,
+                                    download_url,
+                                    is_mandatory: true,
+                                    message: message.clone(),
+                                };
+                                let _ = tx.send(Message::Text(serde_json::to_string(&update_frame).unwrap()));
+                                let resp = BridgeFrame::AuthError { reason: message };
+                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                                break;
+                            }
+                            crate::state::VersionCheckResult::UpdateAvailable {
+                                current_version,
+                                latest_version,
+                                download_url,
+                                message,
+                            } => {
+                                info!("[WS AUTH] Optional update available for registering client '@{}' (current: {}, latest: {})", clean_username, current_version, latest_version);
+                                let update_frame = BridgeFrame::UpdateAvailable {
+                                    current_version,
+                                    latest_version,
+                                    download_url,
+                                    message,
+                                };
+                                let _ = tx.send(Message::Text(serde_json::to_string(&update_frame).unwrap()));
+                            }
+                            crate::state::VersionCheckResult::Supported => {}
+                        }
 
                         // Check if username is already registered to prevent key hijacking
                         if let Ok(Some(_existing)) = state.db.get_user(&clean_username) {
@@ -169,10 +212,53 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                         signature,
                         hardware_hash,
                         device_name,
+                        app_version,
+                        build_number,
                         ..
                     } => {
                         let clean_username = clean_user(&username);
-                        info!("[WS AUTH] AUTH_RESPONSE login attempt for '@{}' on conn #{}", clean_username, conn_id);
+                        info!("[WS AUTH] AUTH_RESPONSE login attempt for '@{}' on conn #{} (Version: {:?}, Build: {:?})", clean_username, conn_id, app_version, build_number);
+
+                        // Version Policy Validation
+                        match state.evaluate_version_policy(app_version.as_deref(), build_number) {
+                            crate::state::VersionCheckResult::OutdatedMandatory {
+                                current_version,
+                                min_version,
+                                latest_version,
+                                download_url,
+                                message,
+                            } => {
+                                warn!("[WS AUTH] AUTH_RESPONSE rejected for '@{}' on conn #{}: Outdated client version {} < min {}", clean_username, conn_id, current_version, min_version);
+                                let update_frame = BridgeFrame::UpdateRequired {
+                                    current_version,
+                                    min_version,
+                                    latest_version,
+                                    download_url,
+                                    is_mandatory: true,
+                                    message: message.clone(),
+                                };
+                                let _ = tx.send(Message::Text(serde_json::to_string(&update_frame).unwrap()));
+                                let resp = BridgeFrame::AuthError { reason: message };
+                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                                break;
+                            }
+                            crate::state::VersionCheckResult::UpdateAvailable {
+                                current_version,
+                                latest_version,
+                                download_url,
+                                message,
+                            } => {
+                                info!("[WS AUTH] Optional update available for client '@{}' (current: {}, latest: {})", clean_username, current_version, latest_version);
+                                let update_frame = BridgeFrame::UpdateAvailable {
+                                    current_version,
+                                    latest_version,
+                                    download_url,
+                                    message,
+                                };
+                                let _ = tx.send(Message::Text(serde_json::to_string(&update_frame).unwrap()));
+                            }
+                            crate::state::VersionCheckResult::Supported => {}
+                        }
 
                         // Check if user account is locked due to brute force protection
                         if state.db.is_user_locked(&clean_username) {

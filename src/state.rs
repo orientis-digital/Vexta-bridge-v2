@@ -13,6 +13,65 @@ pub type Tx = UnboundedSender<Message>;
 pub const SERVER_VERSION: &str = "v0.0.1";
 pub const SERVER_NAME: &str = "Vexta Bridge V2 - v0.0.1";
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VersionPolicy {
+    pub min_client_version: String,
+    pub min_build_number: u32,
+    pub latest_client_version: String,
+    pub latest_build_number: u32,
+    pub update_download_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VersionCheckResult {
+    Supported,
+    OutdatedMandatory {
+        current_version: String,
+        min_version: String,
+        latest_version: String,
+        download_url: Option<String>,
+        message: String,
+    },
+    UpdateAvailable {
+        current_version: String,
+        latest_version: String,
+        download_url: Option<String>,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ParsedVersion {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+    pub build: u32,
+}
+
+impl ParsedVersion {
+    pub fn parse(ver_str: &str, build_num: Option<u32>) -> Self {
+        let clean = ver_str.trim().trim_start_matches('v').trim_start_matches('@');
+        let mut build = build_num.unwrap_or(0);
+        let base_ver = if let Some((base, b_str)) = clean.split_once('+') {
+            if let Ok(b) = b_str.parse::<u32>() {
+                build = b;
+            }
+            base
+        } else if let Some((base, _)) = clean.split_once('-') {
+            base
+        } else {
+            clean
+        };
+
+        let parts: Vec<&str> = base_ver.split('.').collect();
+        let major = parts.get(0).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        let minor = parts.get(1).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        let patch = parts.get(2).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+
+        Self { major, minor, patch, build }
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub db: DbManager,
@@ -26,6 +85,7 @@ pub struct AppState {
     pub broadcast_tx: tokio::sync::broadcast::Sender<String>,
     pub maintenance_mode: Arc<AtomicBool>,
     pub ip_ban_list: Arc<DashMap<String, String>>,
+    pub version_policy: Arc<std::sync::RwLock<VersionPolicy>>,
 }
 
 impl AppState {
@@ -40,6 +100,20 @@ impl AppState {
         let (broadcast_tx, _) = tokio::sync::broadcast::channel(256);
         let maintenance_mode = Arc::new(AtomicBool::new(false));
         let ip_ban_list = Arc::new(DashMap::new());
+
+        let min_client_version = std::env::var("MIN_CLIENT_VERSION").unwrap_or_else(|_| "0.0.1".into());
+        let min_build_number = std::env::var("MIN_BUILD_NUMBER").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+        let latest_client_version = std::env::var("LATEST_CLIENT_VERSION").unwrap_or_else(|_| "0.0.13".into());
+        let latest_build_number = std::env::var("LATEST_BUILD_NUMBER").ok().and_then(|s| s.parse().ok()).unwrap_or(15);
+        let update_download_url = std::env::var("UPDATE_DOWNLOAD_URL").unwrap_or_else(|_| "https://downloads.nexusec.space/vexta".into());
+
+        let version_policy = Arc::new(std::sync::RwLock::new(VersionPolicy {
+            min_client_version,
+            min_build_number,
+            latest_client_version,
+            latest_build_number,
+            update_download_url,
+        }));
 
         // Cache initial banned IPs from SQLite
         let mut banned_count = 0;
@@ -62,6 +136,7 @@ impl AppState {
             broadcast_tx,
             maintenance_mode,
             ip_ban_list,
+            version_policy,
         }
     }
 
@@ -212,5 +287,78 @@ impl AppState {
             self.total_messages_relayed.load(Ordering::Relaxed),
             self.total_bytes_relayed.load(Ordering::Relaxed),
         )
+    }
+
+    pub fn evaluate_version_policy(&self, app_version: Option<&str>, build_number: Option<u32>) -> VersionCheckResult {
+        let client_ver_str = app_version.unwrap_or("0.0.0");
+        let client_ver = ParsedVersion::parse(client_ver_str, build_number);
+
+        let policy = self.version_policy.read().unwrap();
+        let min_ver = ParsedVersion::parse(&policy.min_client_version, Some(policy.min_build_number));
+        let latest_ver = ParsedVersion::parse(&policy.latest_client_version, Some(policy.latest_build_number));
+
+        let display_client = if client_ver.build > 0 {
+            format!("{}.{}.{}+{}", client_ver.major, client_ver.minor, client_ver.patch, client_ver.build)
+        } else {
+            format!("{}.{}.{}", client_ver.major, client_ver.minor, client_ver.patch)
+        };
+
+        let display_min = if policy.min_build_number > 0 {
+            format!("{}+{}", policy.min_client_version, policy.min_build_number)
+        } else {
+            policy.min_client_version.clone()
+        };
+
+        let display_latest = if policy.latest_build_number > 0 {
+            format!("{}+{}", policy.latest_client_version, policy.latest_build_number)
+        } else {
+            policy.latest_client_version.clone()
+        };
+
+        if client_ver < min_ver {
+            VersionCheckResult::OutdatedMandatory {
+                current_version: display_client.clone(),
+                min_version: display_min.clone(),
+                latest_version: display_latest,
+                download_url: Some(policy.update_download_url.clone()),
+                message: format!("Your Vexta client ({}) is outdated and no longer supported. Please update to {} or newer to continue.", display_client, display_min),
+            }
+        } else if client_ver < latest_ver {
+            VersionCheckResult::UpdateAvailable {
+                current_version: display_client,
+                latest_version: display_latest.clone(),
+                download_url: Some(policy.update_download_url.clone()),
+                message: format!("A new version of Vexta ({}) is available. Update now for performance and security enhancements.", display_latest),
+            }
+        } else {
+            VersionCheckResult::Supported
+        }
+    }
+
+    pub fn get_version_policy(&self) -> VersionPolicy {
+        self.version_policy.read().unwrap().clone()
+    }
+
+    pub fn set_version_policy(&self, policy: VersionPolicy) {
+        info!("[SYSTEM] Updated version policy: min={}+{}, latest={}+{}", policy.min_client_version, policy.min_build_number, policy.latest_client_version, policy.latest_build_number);
+        let mut p = self.version_policy.write().unwrap();
+        *p = policy;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parsed_version_comparison() {
+        let v1 = ParsedVersion::parse("0.0.12", Some(14));
+        let v2 = ParsedVersion::parse("0.0.13-tauri", Some(15));
+        let v3 = ParsedVersion::parse("v0.0.13+15", None);
+        let v4 = ParsedVersion::parse("0.1.0", None);
+
+        assert!(v1 < v2);
+        assert_eq!(v2, v3);
+        assert!(v3 < v4);
     }
 }

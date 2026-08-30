@@ -103,6 +103,10 @@ async fn main() {
         // System Vacuum & Health
         .route("/api/admin/system/vacuum", post(admin_vacuum_db_handler))
         .route("/api/admin/system/db-health", get(admin_db_health_handler))
+        // Version Policy
+        .route("/api/version-policy", get(public_version_policy_handler))
+        .route("/api/version-policy/", get(public_version_policy_handler))
+        .route("/api/admin/version-policy", get(admin_get_version_policy_handler).post(admin_set_version_policy_handler))
         // Traffic Analytics
         .route("/api/admin/analytics/top-users", get(admin_top_user_analytics_handler));
 
@@ -641,6 +645,40 @@ async fn admin_list_devices_handler(
     }
 
     (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})))
+}
+
+// Public Version Policy Handler
+async fn public_version_policy_handler(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let policy = state.get_version_policy();
+    (StatusCode::OK, Json(serde_json::to_value(policy).unwrap()))
+}
+
+// Admin Get Version Policy Handler
+async fn admin_get_version_policy_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if !verify_admin_auth(&headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
+    }
+    let policy = state.get_version_policy();
+    (StatusCode::OK, Json(serde_json::to_value(policy).unwrap()))
+}
+
+// Admin Set Version Policy Handler
+async fn admin_set_version_policy_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    Json(payload): Json<state::VersionPolicy>,
+) -> impl IntoResponse {
+    if !verify_admin_auth(&headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
+    }
+    state.set_version_policy(payload.clone());
+    let _ = state.db.log_audit_action("SET_VERSION_POLICY", "SYSTEM", &format!("Min: {}+{}, Latest: {}+{}", payload.min_client_version, payload.min_build_number, payload.latest_client_version, payload.latest_build_number));
+    (StatusCode::OK, Json(json!({"success": true, "policy": payload})))
 }
 
 #[derive(Deserialize)]
