@@ -235,12 +235,11 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                             // Deliver Offline Messages
                             if let Ok(offline_msgs) = state.db.fetch_and_clear_offline_messages(&clean_username) {
                                 if !offline_msgs.is_empty() {
-                                    info!("[WS RELAY] Delivering {} queued offline messages to '@{}' on conn #{}", offline_msgs.len(), clean_username, conn_id);
+                                    info!("[WS RELAY] Delivering {} queued blind offline messages to '@{}' on conn #{}", offline_msgs.len(), clean_username, conn_id);
                                 }
                                 for o_msg in offline_msgs {
                                     let frame = BridgeFrame::BlindMessage {
                                         id: o_msg.id,
-                                        sender: o_msg.sender,
                                         ciphertext: o_msg.ciphertext,
                                         timestamp: o_msg.timestamp,
                                         is_group: o_msg.is_group,
@@ -289,9 +288,9 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                         let now = timestamp.unwrap_or_else(|| chrono::Utc::now().timestamp());
                         let is_grp = is_group.unwrap_or(false);
 
+                        // Construct metadata-blind envelope (NO outer sender attached)
                         let blind_frame = BridgeFrame::BlindMessage {
                             id: chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
-                            sender: sender.clone(),
                             ciphertext: ciphertext.clone(),
                             timestamp: now,
                             is_group: is_grp,
@@ -301,14 +300,14 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                         state.record_user_traffic(&sender, text_json.len() as u64);
 
                         let delivered = state.send_to_user(&clean_recipient, Message::Text(text_json.clone()));
-                        // Multi-device self-sync: replicate outbound message to sender's other linked devices
+                        // Multi-device self-sync: replicate outbound blind envelope to sender's other linked devices
                         let _ = state.send_to_user_except(&sender, conn_id, Message::Text(text_json));
 
                         if !delivered {
-                            let _ = state.db.enqueue_offline_message(&clean_recipient, &sender, &ciphertext, now, is_grp);
-                            info!("[WS RELAY] Queued offline message: '@{}' -> '@{}' (is_group: {})", sender, clean_recipient, is_grp);
+                            let _ = state.db.enqueue_offline_message(&clean_recipient, &ciphertext, now, is_grp);
+                            info!("[WS RELAY] Queued blind offline envelope for recipient '@{}' (size: {}B, is_group: {})", clean_recipient, ciphertext.len(), is_grp);
                         } else {
-                            info!("[WS RELAY] Relayed live message: '@{}' -> '@{}' (is_group: {})", sender, clean_recipient, is_grp);
+                            info!("[WS RELAY] Delivered blind live envelope to recipient '@{}' (size: {}B, is_group: {})", clean_recipient, ciphertext.len(), is_grp);
                         }
                     }
 

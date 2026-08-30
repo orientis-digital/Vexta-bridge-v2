@@ -131,7 +131,6 @@ impl DbManager {
             CREATE TABLE IF NOT EXISTS offline_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 recipient TEXT NOT NULL,
-                sender TEXT NOT NULL,
                 ciphertext TEXT NOT NULL,
                 timestamp INTEGER NOT NULL,
                 is_group INTEGER NOT NULL DEFAULT 0,
@@ -175,7 +174,7 @@ impl DbManager {
             "UPDATE users SET username = LOWER(LTRIM(username, '@'));
              UPDATE friend_requests SET sender = LOWER(LTRIM(sender, '@')), recipient = LOWER(LTRIM(recipient, '@'));
              UPDATE user_devices SET username = LOWER(LTRIM(username, '@'));
-             UPDATE offline_messages SET recipient = LOWER(LTRIM(recipient, '@')), sender = LOWER(LTRIM(sender, '@'));"
+             UPDATE offline_messages SET recipient = LOWER(LTRIM(recipient, '@'));"
         );
 
         info!("[DB] SQLite database initialized at '{}' (WAL mode, foreign keys ON)", db_path);
@@ -590,21 +589,19 @@ impl DbManager {
     pub fn enqueue_offline_message(
         &self,
         recipient: &str,
-        sender: &str,
         ciphertext: &str,
         timestamp: i64,
         is_group: bool,
     ) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
         let clean_recipient = clean_user(recipient);
-        let clean_sender = clean_user(sender);
         conn.execute(
-            "INSERT INTO offline_messages (recipient, sender, ciphertext, timestamp, is_group)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![clean_recipient, clean_sender, ciphertext, timestamp, if is_group { 1 } else { 0 }],
+            "INSERT INTO offline_messages (recipient, ciphertext, timestamp, is_group)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![clean_recipient, ciphertext, timestamp, if is_group { 1 } else { 0 }],
         )?;
         let msg_id = conn.last_insert_rowid();
-        debug!("[DB] Enqueued offline message #{} for recipient '@{}' from '@{}' (group: {})", msg_id, clean_recipient, clean_sender, is_group);
+        debug!("[DB] Enqueued blind offline message #{} for recipient '@{}' (group: {})", msg_id, clean_recipient, is_group);
         Ok(msg_id)
     }
 
@@ -612,18 +609,17 @@ impl DbManager {
         let conn = self.conn.lock().unwrap();
         let clean_recipient = clean_user(recipient);
         let mut stmt = conn.prepare(
-            "SELECT id, recipient, sender, ciphertext, timestamp, is_group
+            "SELECT id, recipient, ciphertext, timestamp, is_group
              FROM offline_messages WHERE LOWER(LTRIM(recipient, '@')) = ?1 ORDER BY timestamp ASC",
         )?;
 
         let rows = stmt.query_map(params![clean_recipient], |row| {
-            let is_group_int: i32 = row.get(5)?;
+            let is_group_int: i32 = row.get(4)?;
             Ok(BlindMessage {
                 id: row.get(0)?,
                 recipient: row.get(1)?,
-                sender: row.get(2)?,
-                ciphertext: row.get(3)?,
-                timestamp: row.get(4)?,
+                ciphertext: row.get(2)?,
+                timestamp: row.get(3)?,
                 is_group: is_group_int == 1,
             })
         })?;
@@ -638,7 +634,7 @@ impl DbManager {
             params![clean_recipient],
         )?;
 
-        debug!("[DB] Fetched and cleared {} offline messages for recipient '@{}'", msgs.len(), clean_recipient);
+        debug!("[DB] Fetched and cleared {} blind offline messages for recipient '@{}'", msgs.len(), clean_recipient);
         Ok(msgs)
     }
 
@@ -907,6 +903,53 @@ mod tests {
 
         let stats = db.get_admin_stats().expect("Failed to get admin stats");
         assert_eq!(stats.total_users, 0);
+
+        // Cleanup
+        let _ = std::fs::remove_file(&db_file);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path));
+    }
+
+    #[test]
+    fn test_sealed_offline_messages() {
+        let temp_dir = std::env::temp_dir();
+        let db_file = temp_dir.join(format!("test_sealed_msgs_{}.db", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let db_path = db_file.to_str().unwrap();
+
+        let db = DbManager::new(db_path).expect("Failed to create test DB");
+
+        // Register recipient user first (required by foreign key constraint)
+        db.save_or_update_user(&VextaUser {
+            username: "alice".to_string(),
+            ed25519_pubkey: "test_pubkey".to_string(),
+            created_at: 1725000000,
+            is_provisioned: true,
+            passcode: None,
+            registration_lock_hash: None,
+            encrypted_vault: None,
+            encrypted_friend_roster: None,
+            pre_key: None,
+            pre_key_signature: None,
+            auth_attempts: 0,
+            locked_until: None,
+        }).expect("Failed to register test user alice");
+
+        // Enqueue sealed offline message without sender
+        let msg_id = db.enqueue_offline_message("alice", "sealed_ciphertext_payload_xyz", 1725000000, false)
+            .expect("Failed to enqueue offline message");
+        assert!(msg_id > 0);
+
+        // Fetch and clear
+        let msgs = db.fetch_and_clear_offline_messages("alice").expect("Failed to fetch offline messages");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].recipient, "alice");
+        assert_eq!(msgs[0].ciphertext, "sealed_ciphertext_payload_xyz");
+        assert_eq!(msgs[0].timestamp, 1725000000);
+        assert_eq!(msgs[0].is_group, false);
+
+        // Verify cleared
+        let msgs_empty = db.fetch_and_clear_offline_messages("alice").expect("Failed to fetch cleared msgs");
+        assert_eq!(msgs_empty.len(), 0);
 
         // Cleanup
         let _ = std::fs::remove_file(&db_file);

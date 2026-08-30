@@ -40,7 +40,6 @@ pub struct UserDevice {
 pub struct BlindMessage {
     pub id: i64,
     pub recipient: String,
-    pub sender: String,
     pub ciphertext: String,
     pub timestamp: i64,
     pub is_group: bool,
@@ -120,7 +119,6 @@ pub enum BridgeFrame {
     #[serde(rename = "BLIND_MESSAGE")]
     BlindMessage {
         id: i64,
-        sender: String,
         ciphertext: String,
         timestamp: i64,
         is_group: bool,

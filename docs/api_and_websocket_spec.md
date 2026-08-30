@@ -211,12 +211,11 @@ Relays an encrypted message payload to a recipient (or group):
 ```
 
 #### `BLIND_MESSAGE` (Server -> Client)
-Pushed live (or delivered from offline queue) to recipient:
+Pushed live (or delivered from offline queue) to recipient without sender metadata (Zero-Knowledge Sealed Sender):
 ```json
 {
   "type": "BLIND_MESSAGE",
   "id": 1722698200000123,
-  "sender": "komradkat",
   "ciphertext": "<Base64 Encrypted Ciphertext>",
   "timestamp": 1722698200000,
   "is_group": false
