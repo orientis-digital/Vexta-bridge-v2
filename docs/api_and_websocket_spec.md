@@ -406,3 +406,31 @@ Returned for operational or protocol errors:
   "message": "User 'alice' does not exist"
 }
 ```
+
+---
+
+## Admin REST & Migration API
+
+All `/api/admin/*` endpoints require the `x-admin-secret: <TOKEN>` header or `Authorization: Bearer <TOKEN>`.
+
+### 1. Version Policy (`/api/admin/version-policy`)
+* `GET /api/admin/version-policy`: Retrieve current version policy.
+* `POST /api/admin/version-policy`: Update version policy dynamically at runtime:
+```json
+{
+  "min_client_version": "0.0.13",
+  "min_build_number": 15,
+  "latest_client_version": "0.0.13",
+  "latest_build_number": 15,
+  "update_download_url": "https://downloads.nexusec.space/vexta"
+}
+```
+
+### 2. Server Migration (`/api/admin/migration/*`)
+* `GET /api/admin/migration/export`: Streams an atomic JSON archive of users, devices, friend requests, announcements, and banned IPs.
+* `POST /api/admin/migration/import`: Ingests an exported JSON archive, safely restoring and updating state in SQLite transactions.
+
+### 3. Telemetry & Analytics
+* `GET /api/admin/analytics/platforms`: Client platform and OS distribution breakdown.
+* `GET /api/admin/analytics/top-users`: Bandwidth and message count per user.
+

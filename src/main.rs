@@ -107,8 +107,12 @@ async fn main() {
         .route("/api/version-policy", get(public_version_policy_handler))
         .route("/api/version-policy/", get(public_version_policy_handler))
         .route("/api/admin/version-policy", get(admin_get_version_policy_handler).post(admin_set_version_policy_handler))
-        // Traffic Analytics
-        .route("/api/admin/analytics/top-users", get(admin_top_user_analytics_handler));
+        // Server Migration (Export & Import)
+        .route("/api/admin/migration/export", get(admin_export_migration_handler))
+        .route("/api/admin/migration/import", post(admin_import_migration_handler))
+        // Traffic & Platform Analytics
+        .route("/api/admin/analytics/top-users", get(admin_top_user_analytics_handler))
+        .route("/api/admin/analytics/platforms", get(admin_platform_analytics_handler));
 
     // Admin UI Routing: Serve React bundle from 'admin-ui/dist' if built, else fallback to embedded HTML
     let admin_dist_path = std::path::Path::new("admin-ui/dist");
@@ -679,6 +683,94 @@ async fn admin_set_version_policy_handler(
     state.set_version_policy(payload.clone());
     let _ = state.db.log_audit_action("SET_VERSION_POLICY", "SYSTEM", &format!("Min: {}+{}, Latest: {}+{}", payload.min_client_version, payload.min_build_number, payload.latest_client_version, payload.latest_build_number));
     (StatusCode::OK, Json(json!({"success": true, "policy": payload})))
+}
+
+// Admin Export Migration Data Handler
+async fn admin_export_migration_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if !verify_admin_auth(&headers) {
+        return (StatusCode::UNAUTHORIZED, HeaderMap::new(), Json(json!({"error": "Unauthorized admin token"}))).into_response();
+    }
+
+    match state.db.export_migration_data(state::SERVER_VERSION, Some(state.get_version_policy())) {
+        Ok(data) => {
+            let _ = state.db.log_audit_action("EXPORT_DATABASE", "SYSTEM", &format!("Exported {} users, {} devices", data.users.len(), data.devices.len()));
+            info!("[ADMIN] Exported complete database migration archive");
+            let mut res_headers = HeaderMap::new();
+            let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+            let filename = format!("vexta_bridge_backup_{}.json", timestamp);
+            res_headers.insert(
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", filename).parse().unwrap(),
+            );
+            (StatusCode::OK, res_headers, Json(serde_json::to_value(data).unwrap())).into_response()
+        }
+        Err(err) => {
+            error!("[ADMIN] Failed to export migration data: {:?}", err);
+            (StatusCode::INTERNAL_SERVER_ERROR, HeaderMap::new(), Json(json!({"error": "Failed to export data"}))).into_response()
+        }
+    }
+}
+
+// Admin Import Migration Data Handler
+async fn admin_import_migration_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    Json(payload): Json<models::BridgeMigrationData>,
+) -> impl IntoResponse {
+    if !verify_admin_auth(&headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
+    }
+
+    if let Some(policy) = &payload.version_policy {
+        state.set_version_policy(policy.clone());
+    }
+
+    match state.db.import_migration_data(&payload) {
+        Ok(stats) => {
+            // Re-populate in-memory IP bans
+            if let Ok(banned_ips) = state.db.list_banned_ips() {
+                state.ip_ban_list.clear();
+                for b in banned_ips {
+                    state.ip_ban_list.insert(b.ip, b.reason);
+                }
+            }
+
+            let _ = state.db.log_audit_action("IMPORT_DATABASE", "SYSTEM", &format!("Imported {} users, {} devices, {} announcements", stats.imported_users, stats.imported_devices, stats.imported_announcements));
+            info!("[ADMIN] Successfully restored/imported database migration archive");
+
+            state.emit_event(&json!({
+                "event": "database_imported",
+                "stats": stats,
+            }).to_string());
+
+            (StatusCode::OK, Json(json!({ "success": true, "stats": stats })))
+        }
+        Err(err) => {
+            error!("[ADMIN] Failed to import migration data: {:?}", err);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("Import failed: {:?}", err) })))
+        }
+    }
+}
+
+// Admin Platform Analytics Handler
+async fn admin_platform_analytics_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if !verify_admin_auth(&headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
+    }
+
+    match state.db.get_platform_distribution() {
+        Ok(dist) => (StatusCode::OK, Json(serde_json::to_value(dist).unwrap())),
+        Err(err) => {
+            error!("[ADMIN] Failed to get platform distribution: {:?}", err);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to get platform analytics"})))
+        }
+    }
 }
 
 #[derive(Deserialize)]

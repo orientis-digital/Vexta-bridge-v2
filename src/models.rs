@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use crate::db::{Announcement, BannedIp};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VextaUser {
@@ -291,4 +292,32 @@ pub enum BridgeFrame {
     Error {
         message: String,
     },
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BridgeMigrationData {
+    pub exported_at: i64,
+    pub server_version: String,
+    pub users: Vec<VextaUser>,
+    pub devices: Vec<UserDevice>,
+    pub friend_requests: Vec<FriendRequest>,
+    pub announcements: Vec<Announcement>,
+    pub banned_ips: Vec<BannedIp>,
+    pub version_policy: Option<crate::state::VersionPolicy>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MigrationImportStats {
+    pub imported_users: usize,
+    pub imported_devices: usize,
+    pub imported_friend_requests: usize,
+    pub imported_announcements: usize,
+    pub imported_banned_ips: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PlatformStats {
+    pub platform: String,
+    pub count: usize,
+    pub percentage: f64,
 }

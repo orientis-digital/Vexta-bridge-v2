@@ -35,10 +35,14 @@ import {
   Eye,
   Edit3,
   Copy,
-  Filter,
   AlertTriangle,
   Check,
-  Share2
+  Share2,
+  Download,
+  Upload,
+  Package,
+  ShieldCheck,
+  FileJson
 } from 'lucide-react';
 
 // Format bytes into human-readable MB / KB
@@ -75,6 +79,73 @@ function getAnnouncementBadge(text) {
     return <span className="chip chip-blue"><Sparkles size={11} /> Feature Update</span>;
   }
   return <span className="chip chip-green"><Info size={11} /> General Notice</span>;
+}
+
+// Client Version Simulator Evaluator
+function simulateVersionCheck(testInput, policy) {
+  if (!testInput || !policy) return null;
+  const clean = testInput.trim().replace(/^v/, '').replace(/^@/, '');
+  let build = 0;
+  let baseVer = clean;
+  if (clean.includes('+')) {
+    const [b, num] = clean.split('+');
+    baseVer = b;
+    build = parseInt(num, 10) || 0;
+  } else if (clean.includes('Build') || clean.includes('build')) {
+    const match = clean.match(/(?:Build|build)\s*(\d+)/);
+    if (match) build = parseInt(match[1], 10) || 0;
+    baseVer = clean.split(/[\s(]/)[0];
+  }
+
+  const parts = baseVer.split('.').map((p) => parseInt(p, 10) || 0);
+  const major = parts[0] || 0;
+  const minor = parts[1] || 0;
+  const patch = parts[2] || 0;
+
+  const parsePolicy = (vStr, bNum) => {
+    const pParts = (vStr || '0.0.0').replace(/^v/, '').split('.').map((p) => parseInt(p, 10) || 0);
+    return {
+      major: pParts[0] || 0,
+      minor: pParts[1] || 0,
+      patch: pParts[2] || 0,
+      build: bNum || 0,
+    };
+  };
+
+  const minP = parsePolicy(policy.min_client_version, policy.min_build_number);
+  const latestP = parsePolicy(policy.latest_client_version, policy.latest_build_number);
+
+  const compare = (a, b) => {
+    if (a.major !== b.major) return a.major - b.major;
+    if (a.minor !== b.minor) return a.minor - b.minor;
+    if (a.patch !== b.patch) return a.patch - b.patch;
+    return a.build - b.build;
+  };
+
+  const clientP = { major, minor, patch, build };
+
+  if (compare(clientP, minP) < 0) {
+    return {
+      status: 'MANDATORY_UPDATE',
+      badge: 'chip-red',
+      label: 'Update Required (Mandatory)',
+      message: `Client build (${major}.${minor}.${patch}+${build}) is rejected. Handshake blocked.`,
+    };
+  } else if (compare(clientP, latestP) < 0) {
+    return {
+      status: 'UPDATE_AVAILABLE',
+      badge: 'chip-amber',
+      label: 'Update Available (Optional)',
+      message: `Client authenticated successfully. Optional update prompt emitted for ${policy.latest_client_version}+${policy.latest_build_number}.`,
+    };
+  } else {
+    return {
+      status: 'SUPPORTED',
+      badge: 'chip-green',
+      label: 'Supported & Up-to-date',
+      message: 'Client version is fully compatible. Authenticated without prompts.',
+    };
+  }
 }
 
 // Lightweight Markdown Renderer Component
@@ -215,6 +286,30 @@ export default function App() {
   const [banIpInput, setBanIpInput] = useState('');
   const [banReasonInput, setBanReasonInput] = useState('');
 
+  // Version Policy & Simulator States
+  const [versionPolicy, setVersionPolicy] = useState({
+    min_client_version: '0.0.1',
+    min_build_number: 0,
+    latest_client_version: '0.0.13',
+    latest_build_number: 15,
+    update_download_url: 'https://downloads.nexusec.space/vexta',
+  });
+  const [editingPolicy, setEditingPolicy] = useState({
+    min_client_version: '0.0.1',
+    min_build_number: 0,
+    latest_client_version: '0.0.13',
+    latest_build_number: 15,
+    update_download_url: 'https://downloads.nexusec.space/vexta',
+  });
+  const [simulatorInput, setSimulatorInput] = useState('0.0.13+15');
+
+  // Platform Analytics State
+  const [platforms, setPlatforms] = useState([]);
+
+  // Server Migration States
+  const [importPayloadText, setImportPayloadText] = useState('');
+  const [isImporting, setIsImporting] = useState(false);
+
   // Enhanced Announcement Composer States
   const [newAnnouncementText, setNewAnnouncementText] = useState('');
   const [announcementCategory, setAnnouncementCategory] = useState('INFO');
@@ -306,6 +401,21 @@ export default function App() {
       // 10. Database Health REST API
       const resHealth = await fetch('/api/admin/system/db-health', { headers });
       if (resHealth.ok) setDbHealth(await resHealth.json());
+
+      // 11. Version Policy REST API
+      const resPolicy = await fetch('/api/admin/version-policy', { headers });
+      if (resPolicy.ok) {
+        const policyData = await resPolicy.json();
+        setVersionPolicy(policyData);
+        setEditingPolicy(policyData);
+      }
+
+      // 12. Platform Distribution Analytics REST API
+      const resPlatforms = await fetch('/api/admin/analytics/platforms', { headers });
+      if (resPlatforms.ok) {
+        const platData = await resPlatforms.json();
+        setPlatforms(platData);
+      }
 
       setLastUpdated(new Date().toLocaleTimeString());
       return true;
@@ -597,6 +707,137 @@ export default function App() {
   const handleFormatInsert = (prefix, suffix = '') => {
     setNewAnnouncementText((prev) => `${prev}${prefix}${suffix}`);
   };
+
+  // Action: Save Version Policy
+  const handleSaveVersionPolicy = async (e) => {
+    if (e) e.preventDefault();
+    try {
+      const payload = {
+        min_client_version: editingPolicy.min_client_version.trim(),
+        min_build_number: parseInt(editingPolicy.min_build_number, 10) || 0,
+        latest_client_version: editingPolicy.latest_client_version.trim(),
+        latest_build_number: parseInt(editingPolicy.latest_build_number, 10) || 0,
+        update_download_url: editingPolicy.update_download_url.trim(),
+      };
+      const res = await fetch('/api/admin/version-policy', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-secret': secretKey,
+        },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        showToast('Version policy updated successfully!', 'success');
+        setVersionPolicy(payload);
+        fetchData();
+      } else {
+        showToast('Failed to update version policy', 'error');
+      }
+    } catch (err) {
+      showToast('Error updating version policy', 'error');
+    }
+  };
+
+  // Action: Export Database
+  const handleExportDatabase = async () => {
+    try {
+      showToast('Generating bridge database backup...', 'info');
+      const res = await fetch('/api/admin/migration/export', {
+        headers: { 'x-admin-secret': secretKey },
+      });
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        a.download = `vexta-bridge-backup-${timestamp}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+        showToast('Database backup downloaded successfully!', 'success');
+        fetchData();
+      } else {
+        showToast('Failed to export database', 'error');
+      }
+    } catch (err) {
+      showToast('Error exporting database backup', 'error');
+    }
+  };
+
+  // Action: Import Database
+  const handleImportDatabase = async () => {
+    if (!importPayloadText.trim()) {
+      showToast('Please select a backup JSON file or paste backup payload', 'error');
+      return;
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(importPayloadText.trim());
+    } catch (e) {
+      showToast('Invalid JSON backup file format', 'error');
+      return;
+    }
+
+    const userCount = parsed.users ? parsed.users.length : 0;
+    const devCount = parsed.devices ? parsed.devices.length : 0;
+
+    if (!window.confirm(`Restore/Import database archive containing ${userCount} users and ${devCount} devices? Existing records will be updated safely.`)) {
+      return;
+    }
+
+    setIsImporting(true);
+    try {
+      const res = await fetch('/api/admin/migration/import', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-secret': secretKey,
+        },
+        body: JSON.stringify(parsed),
+      });
+
+      if (res.ok) {
+        const result = await res.json();
+        const s = result.stats || {};
+        showToast(`Migration successful! Restored ${s.imported_users || 0} users, ${s.imported_devices || 0} devices.`, 'success');
+        setImportPayloadText('');
+        fetchData();
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        showToast(errData.error || 'Failed to import backup archive', 'error');
+      }
+    } catch (err) {
+      showToast('Error executing database import', 'error');
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  // Action: Handle File Input for Import
+  const handleImportFileSelect = (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const text = event.target.result;
+        setImportPayloadText(text);
+        const parsed = JSON.parse(text);
+        showToast(`Loaded backup file (${parsed.users?.length || 0} users, ${parsed.devices?.length || 0} devices)`, 'info');
+      } catch (err) {
+        showToast('Selected file is not valid JSON', 'error');
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const simulatedResult = useMemo(() => {
+    return simulateVersionCheck(simulatorInput, versionPolicy);
+  }, [simulatorInput, versionPolicy]);
 
   // Filtered user search
   const filteredUsers = useMemo(() => {
@@ -893,6 +1134,27 @@ export default function App() {
               </div>
             </button>
 
+            <button
+              className={`sidebar-btn ${activeTab === 'version' ? 'active' : ''}`}
+              onClick={() => setActiveTab('version')}
+            >
+              <div className="sidebar-btn-content">
+                <Package size={16} style={{ color: 'var(--blue)' }} />
+                <span>Version Policy</span>
+              </div>
+              <span className="sidebar-count" style={{ background: 'var(--blue-dim)', color: 'var(--blue)' }}>v{versionPolicy.latest_client_version}</span>
+            </button>
+
+            <button
+              className={`sidebar-btn ${activeTab === 'migration' ? 'active' : ''}`}
+              onClick={() => setActiveTab('migration')}
+            >
+              <div className="sidebar-btn-content">
+                <Share2 size={16} style={{ color: 'var(--purple)' }} />
+                <span>Server Migration</span>
+              </div>
+            </button>
+
             <div className="sidebar-label" style={{ marginTop: 12 }}>Telemetry</div>
 
             <button
@@ -1018,6 +1280,8 @@ export default function App() {
                   {activeTab === 'offline' && <MessageSquare size={16} />}
                   {activeTab === 'devices' && <Smartphone size={16} />}
                   {activeTab === 'announcements' && <Megaphone size={16} />}
+                  {activeTab === 'version' && <Package size={16} />}
+                  {activeTab === 'migration' && <Share2 size={16} />}
                   {activeTab === 'health' && <HardDrive size={16} />}
                 </div>
                 <span>
@@ -1027,6 +1291,8 @@ export default function App() {
                   {activeTab === 'offline' && 'Offline Message Queue Breakdown (Store-and-Forward)'}
                   {activeTab === 'devices' && 'Push Devices & Hardware Registrations'}
                   {activeTab === 'announcements' && 'Broadcast Announcement Center & Interactive Composer'}
+                  {activeTab === 'version' && 'Client Version Compatibility & Runtime Update Policy'}
+                  {activeTab === 'migration' && 'Server Migration, Atomic Export & Database Restore Suite'}
                   {activeTab === 'health' && 'SQLite WAL Storage & Server Process Telemetry'}
                 </span>
               </div>
@@ -1268,6 +1534,85 @@ export default function App() {
                               </div>
                             ))}
                           </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Zero-Knowledge Privacy Compliance & Platform Distribution Grid */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: 20 }}>
+                    {/* Zero-Knowledge Privacy Monitor */}
+                    <div className="panel" style={{ background: 'var(--surface-2)', border: '1px solid rgba(57, 255, 20, 0.25)' }}>
+                      <div className="panel-header" style={{ background: 'rgba(57, 255, 20, 0.04)' }}>
+                        <div className="panel-title" style={{ color: 'var(--accent)' }}>
+                          <ShieldCheck size={16} /> Zero-Knowledge Privacy Compliance
+                        </div>
+                        <span className="chip chip-green">
+                          <Check size={11} /> VERIFIED
+                        </span>
+                      </div>
+                      <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--panel-border)', paddingBottom: 8 }}>
+                          <span style={{ fontSize: 13, color: 'var(--text-2)' }}>Sealed Sender Protocol</span>
+                          <span className="chip chip-green" style={{ fontSize: 11 }}>ACTIVE (Blind Relaying)</span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--panel-border)', paddingBottom: 8 }}>
+                          <span style={{ fontSize: 13, color: 'var(--text-2)' }}>Offline Queue Sender Metadata</span>
+                          <span className="chip chip-green" style={{ fontSize: 11 }}>0 Bytes Stored (Blind)</span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--panel-border)', paddingBottom: 8 }}>
+                          <span style={{ fontSize: 13, color: 'var(--text-2)' }}>Mutual Cryptographic Handshake</span>
+                          <span className="chip chip-blue" style={{ fontSize: 11 }}>Ed25519 Nonce Signatures</span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ fontSize: 13, color: 'var(--text-2)' }}>In-Memory Routing Metadata</span>
+                          <span className="chip chip-green" style={{ fontSize: 11 }}>Ephemeral / Zero Social Graph</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Platform & OS Distribution Widget */}
+                    <div className="panel" style={{ background: 'var(--surface-2)' }}>
+                      <div className="panel-header">
+                        <div className="panel-title">
+                          <Smartphone size={16} /> Client Platform Distribution
+                        </div>
+                        <button className="btn-ghost" onClick={() => setActiveTab('devices')} style={{ padding: '4px 8px', fontSize: 11 }}>
+                          View Devices <ArrowUpRight size={12} />
+                        </button>
+                      </div>
+                      <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                        {platforms.length === 0 ? (
+                          <div style={{ color: 'var(--text-3)', fontSize: 12, textAlign: 'center', padding: 16 }}>
+                            No registered client devices to display.
+                          </div>
+                        ) : (
+                          platforms.map((p) => (
+                            <div key={p.platform} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
+                                <span style={{ color: 'var(--text-1)', fontWeight: 500 }}>{p.platform}</span>
+                                <span style={{ color: 'var(--text-3)', fontFamily: 'IBM Plex Mono, monospace' }}>
+                                  {p.count} devices ({p.percentage}%)
+                                </span>
+                              </div>
+                              <div style={{ height: 6, background: 'var(--surface-3)', borderRadius: 3, overflow: 'hidden' }}>
+                                <div
+                                  style={{
+                                    width: `${p.percentage}%`,
+                                    height: '100%',
+                                    background: p.platform.includes('Win')
+                                      ? 'var(--blue)'
+                                      : p.platform.includes('Linux')
+                                      ? 'var(--amber)'
+                                      : p.platform.includes('mac')
+                                      ? 'var(--purple)'
+                                      : 'var(--accent)',
+                                    transition: 'width 0.4s ease',
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          ))
                         )}
                       </div>
                     </div>
@@ -2123,6 +2468,293 @@ export default function App() {
                         <span style={{ color: 'var(--text-3)' }}>Binary Framing</span>
                         <span>MessagePack (rmp-serde)</span>
                       </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* 7. VERSION POLICY TAB */}
+              {activeTab === 'version' && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 24 }}>
+                  {/* Panel 1: Policy Configuration Form */}
+                  <div className="panel" style={{ background: 'var(--surface-2)' }}>
+                    <div className="panel-header">
+                      <div className="panel-title">
+                        <Package size={16} /> Runtime Client Version Enforcement Policy
+                      </div>
+                    </div>
+                    <div className="panel-body">
+                      <form onSubmit={handleSaveVersionPolicy} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
+                          <div className="input-group">
+                            <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--danger)' }}>
+                              Minimum Client Version
+                            </label>
+                            <input
+                              type="text"
+                              placeholder="e.g. 0.0.13"
+                              value={editingPolicy.min_client_version}
+                              onChange={(e) => setEditingPolicy({ ...editingPolicy, min_client_version: e.target.value })}
+                              style={{ width: '100%', padding: '10px 12px', borderRadius: 'var(--radius-sm)' }}
+                            />
+                            <span style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
+                              Clients below this are blocked with mandatory update prompt.
+                            </span>
+                          </div>
+                          <div className="input-group">
+                            <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--danger)' }}>
+                              Min Build #
+                            </label>
+                            <input
+                              type="number"
+                              placeholder="15"
+                              value={editingPolicy.min_build_number}
+                              onChange={(e) => setEditingPolicy({ ...editingPolicy, min_build_number: e.target.value })}
+                              style={{ width: '100%', padding: '10px 12px', borderRadius: 'var(--radius-sm)' }}
+                            />
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
+                          <div className="input-group">
+                            <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent)' }}>
+                              Latest Client Version
+                            </label>
+                            <input
+                              type="text"
+                              placeholder="e.g. 0.0.13"
+                              value={editingPolicy.latest_client_version}
+                              onChange={(e) => setEditingPolicy({ ...editingPolicy, latest_client_version: e.target.value })}
+                              style={{ width: '100%', padding: '10px 12px', borderRadius: 'var(--radius-sm)' }}
+                            />
+                            <span style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
+                              Clients below this receive optional upgrade notices.
+                            </span>
+                          </div>
+                          <div className="input-group">
+                            <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent)' }}>
+                              Latest Build #
+                            </label>
+                            <input
+                              type="number"
+                              placeholder="15"
+                              value={editingPolicy.latest_build_number}
+                              onChange={(e) => setEditingPolicy({ ...editingPolicy, latest_build_number: e.target.value })}
+                              style={{ width: '100%', padding: '10px 12px', borderRadius: 'var(--radius-sm)' }}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="input-group">
+                          <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-1)' }}>
+                            Update Download URL
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="https://downloads.nexusec.space/vexta"
+                            value={editingPolicy.update_download_url}
+                            onChange={(e) => setEditingPolicy({ ...editingPolicy, update_download_url: e.target.value })}
+                            style={{ width: '100%', padding: '10px 12px', borderRadius: 'var(--radius-sm)' }}
+                          />
+                        </div>
+
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+                          <button type="submit" className="btn-primary" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <Check size={14} /> Save Version Policy
+                          </button>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
+
+                  {/* Panel 2: Interactive Version Simulator */}
+                  <div className="panel" style={{ background: 'var(--surface-2)' }}>
+                    <div className="panel-header">
+                      <div className="panel-title">
+                        <Sparkles size={16} style={{ color: 'var(--amber)' }} /> Live Version Policy Simulator
+                      </div>
+                    </div>
+                    <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                      <p style={{ fontSize: 13, color: 'var(--text-2)' }}>
+                        Simulate how the Rust bridge will evaluate client versions and build numbers during WebSocket authentication handshake.
+                      </p>
+
+                      <div className="input-group">
+                        <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-1)' }}>
+                          Test Client Version String
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="e.g. 0.0.12+14 or 0.0.13 (Build 15)"
+                          value={simulatorInput}
+                          onChange={(e) => setSimulatorInput(e.target.value)}
+                          style={{ width: '100%', padding: '10px 12px', borderRadius: 'var(--radius-sm)' }}
+                        />
+                      </div>
+
+                      {simulatedResult && (
+                        <div
+                          style={{
+                            background: 'var(--surface-3)',
+                            borderRadius: 'var(--radius-md)',
+                            border: '1px solid var(--panel-border)',
+                            padding: 16,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 8,
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <span style={{ fontSize: 12, color: 'var(--text-3)' }}>Evaluation Result:</span>
+                            <span className={`chip ${simulatedResult.badge}`}>{simulatedResult.label}</span>
+                          </div>
+                          <p style={{ fontSize: 13, color: 'var(--text-1)', lineHeight: 1.4 }}>
+                            {simulatedResult.message}
+                          </p>
+                        </div>
+                      )}
+
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        <button className="btn-ghost" onClick={() => setSimulatorInput('0.0.10+10')} style={{ fontSize: 11, padding: '4px 8px' }}>
+                          Outdated (0.0.10)
+                        </button>
+                        <button className="btn-ghost" onClick={() => setSimulatorInput('0.0.12+14')} style={{ fontSize: 11, padding: '4px 8px' }}>
+                          Previous (0.0.12)
+                        </button>
+                        <button className="btn-ghost" onClick={() => setSimulatorInput('0.0.13+15')} style={{ fontSize: 11, padding: '4px 8px' }}>
+                          Current (0.0.13)
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* 8. SERVER MIGRATION & BACKUPS TAB */}
+              {activeTab === 'migration' && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: 24 }}>
+                  {/* Panel 1: Export Database */}
+                  <div className="panel" style={{ background: 'var(--surface-2)' }}>
+                    <div className="panel-header">
+                      <div className="panel-title">
+                        <Download size={16} style={{ color: 'var(--accent)' }} /> Export Database Archive
+                      </div>
+                    </div>
+                    <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                      <p style={{ fontSize: 13, color: 'var(--text-2)' }}>
+                        Export all encrypted user vaults, pre-keys, devices, friend requests, announcements, and banned IPs into an atomic, portable JSON archive for server migrations.
+                      </p>
+
+                      <div
+                        style={{
+                          background: 'var(--surface-3)',
+                          borderRadius: 'var(--radius-md)',
+                          border: '1px solid var(--panel-border)',
+                          padding: 16,
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(2, 1fr)',
+                          gap: 12,
+                          fontSize: 12,
+                        }}
+                      >
+                        <div>
+                          <span style={{ color: 'var(--text-3)' }}>Accounts to Export:</span>
+                          <strong style={{ display: 'block', fontSize: 15, color: 'var(--blue)' }}>{stats.total_users || 0} users</strong>
+                        </div>
+                        <div>
+                          <span style={{ color: 'var(--text-3)' }}>Registered Devices:</span>
+                          <strong style={{ display: 'block', fontSize: 15, color: 'var(--purple)' }}>{stats.total_registered_devices || 0} devices</strong>
+                        </div>
+                        <div>
+                          <span style={{ color: 'var(--text-3)' }}>Announcements:</span>
+                          <strong style={{ display: 'block', fontSize: 15, color: 'var(--accent)' }}>{announcements.length} notices</strong>
+                        </div>
+                        <div>
+                          <span style={{ color: 'var(--text-3)' }}>Firewall IP Bans:</span>
+                          <strong style={{ display: 'block', fontSize: 15, color: 'var(--danger)' }}>{bannedIps.length} rules</strong>
+                        </div>
+                      </div>
+
+                      <button
+                        className="btn-primary"
+                        onClick={handleExportDatabase}
+                        style={{ padding: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontWeight: 600 }}
+                      >
+                        <Download size={16} /> Export Bridge Database JSON
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Panel 2: Import & Restore Database */}
+                  <div className="panel" style={{ background: 'var(--surface-2)' }}>
+                    <div className="panel-header">
+                      <div className="panel-title">
+                        <Upload size={16} style={{ color: 'var(--purple)' }} /> Restore / Migrate Database
+                      </div>
+                    </div>
+                    <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                      <p style={{ fontSize: 13, color: 'var(--text-2)' }}>
+                        Restore an exported backup archive into this bridge instance. Records will be safely merged and updated using atomic SQLite transactions.
+                      </p>
+
+                      <div className="input-group">
+                        <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-1)' }}>
+                          Select Backup JSON File
+                        </label>
+                        <input
+                          type="file"
+                          accept=".json,application/json"
+                          onChange={handleImportFileSelect}
+                          style={{
+                            width: '100%',
+                            padding: '8px 10px',
+                            borderRadius: 'var(--radius-sm)',
+                            background: 'var(--surface-3)',
+                            border: '1px dashed var(--panel-border)',
+                            color: 'var(--text-2)',
+                            cursor: 'pointer',
+                          }}
+                        />
+                      </div>
+
+                      <div className="input-group">
+                        <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-1)' }}>
+                          Or Paste JSON Backup Payload
+                        </label>
+                        <textarea
+                          placeholder='{"exported_at": 1725..., "users": [...], "devices": [...]}'
+                          value={importPayloadText}
+                          onChange={(e) => setImportPayloadText(e.target.value)}
+                          rows={4}
+                          style={{
+                            width: '100%',
+                            padding: '10px 12px',
+                            borderRadius: 'var(--radius-sm)',
+                            fontFamily: 'IBM Plex Mono, monospace',
+                            fontSize: 11,
+                            background: 'var(--surface-3)',
+                            border: '1px solid var(--panel-border)',
+                            color: 'var(--text-1)',
+                            resize: 'vertical',
+                          }}
+                        />
+                      </div>
+
+                      <button
+                        className="btn-danger"
+                        disabled={isImporting || !importPayloadText.trim()}
+                        onClick={handleImportDatabase}
+                        style={{
+                          padding: 12,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: 8,
+                          fontWeight: 600,
+                        }}
+                      >
+                        <Upload size={16} /> {isImporting ? 'Restoring Database...' : 'Restore / Migrate Database'}
+                      </button>
                     </div>
                   </div>
                 </div>

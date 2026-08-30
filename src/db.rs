@@ -1,4 +1,4 @@
-use crate::models::{BlindMessage, FriendRequest, UserDevice, VextaUser};
+use crate::models::{BlindMessage, BridgeMigrationData, FriendRequest, MigrationImportStats, PlatformStats, UserDevice, VextaUser};
 use rusqlite::{params, Connection, Result};
 use std::sync::{Arc, Mutex};
 use tracing::{info, debug, warn};
@@ -878,6 +878,252 @@ impl DbManager {
             integrity_check: integrity,
         })
     }
+
+    pub fn list_all_devices(&self) -> Result<Vec<UserDevice>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, username, hardware_hash, device_name, device_type, registered_at, last_active FROM user_devices ORDER BY last_active DESC"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(UserDevice {
+                id: row.get(0)?,
+                username: row.get(1)?,
+                hardware_hash: row.get(2)?,
+                device_name: row.get(3)?,
+                device_type: row.get(4)?,
+                registered_at: row.get(5)?,
+                last_active: row.get(6)?,
+            })
+        })?;
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    }
+
+    pub fn list_all_friend_requests(&self) -> Result<Vec<FriendRequest>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, sender, recipient, status, created_at FROM friend_requests"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(FriendRequest {
+                id: row.get(0)?,
+                sender: row.get(1)?,
+                recipient: row.get(2)?,
+                status: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    }
+
+    pub fn export_migration_data(&self, server_version: &str, policy: Option<crate::state::VersionPolicy>) -> Result<BridgeMigrationData> {
+        let users = self.list_all_users()?;
+        let devices = self.list_all_devices()?;
+        let friend_requests = self.list_all_friend_requests()?;
+        let announcements = self.list_announcements()?;
+        let banned_ips = self.list_banned_ips()?;
+        let exported_at = chrono::Utc::now().timestamp();
+
+        info!("[DB] Exported bridge migration data (Users: {}, Devices: {}, Requests: {}, Announcements: {}, Bans: {})",
+            users.len(), devices.len(), friend_requests.len(), announcements.len(), banned_ips.len());
+
+        Ok(BridgeMigrationData {
+            exported_at,
+            server_version: server_version.to_string(),
+            users,
+            devices,
+            friend_requests,
+            announcements,
+            banned_ips,
+            version_policy: policy,
+        })
+    }
+
+    pub fn import_migration_data(&self, data: &BridgeMigrationData) -> Result<MigrationImportStats> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        let mut imported_users = 0;
+        let mut imported_devices = 0;
+        let mut imported_friend_requests = 0;
+        let mut imported_announcements = 0;
+        let mut imported_banned_ips = 0;
+
+        // 1. Users
+        for user in &data.users {
+            let clean_username = clean_user(&user.username);
+            tx.execute(
+                "INSERT INTO users (username, ed25519_pubkey, created_at, is_provisioned, passcode, registration_lock_hash, encrypted_vault, encrypted_friend_roster, pre_key, pre_key_signature, auth_attempts, locked_until)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                 ON CONFLICT(username) DO UPDATE SET
+                 ed25519_pubkey=excluded.ed25519_pubkey,
+                 is_provisioned=excluded.is_provisioned,
+                 passcode=COALESCE(excluded.passcode, users.passcode),
+                 registration_lock_hash=COALESCE(excluded.registration_lock_hash, users.registration_lock_hash),
+                 encrypted_vault=COALESCE(excluded.encrypted_vault, users.encrypted_vault),
+                 encrypted_friend_roster=COALESCE(excluded.encrypted_friend_roster, users.encrypted_friend_roster),
+                 pre_key=COALESCE(excluded.pre_key, users.pre_key),
+                 pre_key_signature=COALESCE(excluded.pre_key_signature, users.pre_key_signature),
+                 auth_attempts=excluded.auth_attempts,
+                 locked_until=excluded.locked_until",
+                params![
+                    clean_username,
+                    user.ed25519_pubkey,
+                    user.created_at,
+                    if user.is_provisioned { 1 } else { 0 },
+                    user.passcode,
+                    user.registration_lock_hash,
+                    user.encrypted_vault,
+                    user.encrypted_friend_roster,
+                    user.pre_key,
+                    user.pre_key_signature,
+                    user.auth_attempts,
+                    user.locked_until,
+                ],
+            )?;
+            imported_users += 1;
+        }
+
+        // 2. Devices
+        for dev in &data.devices {
+            let clean_username = clean_user(&dev.username);
+            tx.execute(
+                "INSERT INTO user_devices (username, hardware_hash, device_name, device_type, registered_at, last_active)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(username, hardware_hash) DO UPDATE SET
+                 device_name=excluded.device_name,
+                 device_type=excluded.device_type,
+                 last_active=excluded.last_active",
+                params![
+                    clean_username,
+                    dev.hardware_hash,
+                    dev.device_name,
+                    dev.device_type,
+                    dev.registered_at,
+                    dev.last_active,
+                ],
+            )?;
+            imported_devices += 1;
+        }
+
+        // 3. Friend Requests
+        for req in &data.friend_requests {
+            let clean_sender = clean_user(&req.sender);
+            let clean_recipient = clean_user(&req.recipient);
+            tx.execute(
+                "INSERT INTO friend_requests (sender, recipient, status, created_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(sender, recipient) DO UPDATE SET
+                 status=excluded.status",
+                params![
+                    clean_sender,
+                    clean_recipient,
+                    req.status,
+                    req.created_at,
+                ],
+            )?;
+            imported_friend_requests += 1;
+        }
+
+        // 4. Announcements
+        for ann in &data.announcements {
+            tx.execute(
+                "INSERT INTO announcements (message, created_at)
+                 VALUES (?1, ?2)",
+                params![ann.message, ann.created_at],
+            )?;
+            imported_announcements += 1;
+        }
+
+        // 5. Banned IPs
+        for b in &data.banned_ips {
+            tx.execute(
+                "INSERT INTO ip_bans (ip, reason, banned_by, created_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(ip) DO UPDATE SET
+                 reason=excluded.reason,
+                 banned_by=excluded.banned_by",
+                params![b.ip, b.reason, b.banned_by, b.created_at],
+            )?;
+            imported_banned_ips += 1;
+        }
+
+        tx.commit()?;
+
+        info!("[DB] Successfully imported migration data (Users: {}, Devices: {}, Requests: {}, Announcements: {}, Bans: {})",
+            imported_users, imported_devices, imported_friend_requests, imported_announcements, imported_banned_ips);
+
+        Ok(MigrationImportStats {
+            imported_users,
+            imported_devices,
+            imported_friend_requests,
+            imported_announcements,
+            imported_banned_ips,
+        })
+    }
+
+    pub fn get_platform_distribution(&self) -> Result<Vec<PlatformStats>> {
+        let devices = self.list_all_devices()?;
+        let total = devices.len();
+        if total == 0 {
+            return Ok(vec![
+                PlatformStats { platform: "Windows".into(), count: 0, percentage: 0.0 },
+                PlatformStats { platform: "Linux".into(), count: 0, percentage: 0.0 },
+                PlatformStats { platform: "macOS".into(), count: 0, percentage: 0.0 },
+                PlatformStats { platform: "Android".into(), count: 0, percentage: 0.0 },
+                PlatformStats { platform: "iOS".into(), count: 0, percentage: 0.0 },
+                PlatformStats { platform: "Other".into(), count: 0, percentage: 0.0 },
+            ]);
+        }
+
+        let mut windows = 0;
+        let mut macos = 0;
+        let mut linux = 0;
+        let mut android = 0;
+        let mut ios = 0;
+        let mut other = 0;
+
+        for d in &devices {
+            let name_lower = d.device_name.to_lowercase();
+            let type_lower = d.device_type.to_lowercase();
+
+            if name_lower.contains("win") || type_lower.contains("win") {
+                windows += 1;
+            } else if name_lower.contains("mac") || name_lower.contains("apple") || type_lower.contains("mac") {
+                macos += 1;
+            } else if name_lower.contains("android") || type_lower.contains("android") {
+                android += 1;
+            } else if name_lower.contains("ios") || name_lower.contains("iphone") || name_lower.contains("ipad") {
+                ios += 1;
+            } else if name_lower.contains("linux") || type_lower.contains("linux") {
+                linux += 1;
+            } else {
+                other += 1;
+            }
+        }
+
+        let make_stat = |name: &str, count: usize| PlatformStats {
+            platform: name.to_string(),
+            count,
+            percentage: ((count as f64 / total as f64) * 100.0 * 10.0).round() / 10.0,
+        };
+
+        Ok(vec![
+            make_stat("Windows", windows),
+            make_stat("Linux", linux),
+            make_stat("macOS", macos),
+            make_stat("Android", android),
+            make_stat("iOS", ios),
+            make_stat("Other", other),
+        ])
+    }
 }
 
 #[cfg(test)]
@@ -955,6 +1201,68 @@ mod tests {
         let _ = std::fs::remove_file(&db_file);
         let _ = std::fs::remove_file(format!("{}-wal", db_path));
         let _ = std::fs::remove_file(format!("{}-shm", db_path));
+    }
+
+    #[test]
+    fn test_export_and_import_migration_data() {
+        let temp_dir = std::env::temp_dir();
+        let db_file_a = temp_dir.join(format!("test_mig_a_{}.db", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let db_file_b = temp_dir.join(format!("test_mig_b_{}.db", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let path_a = db_file_a.to_str().unwrap();
+        let path_b = db_file_b.to_str().unwrap();
+
+        let db_a = DbManager::new(path_a).expect("Failed to create DB A");
+        let db_b = DbManager::new(path_b).expect("Failed to create DB B");
+
+        // Seed data in A
+        db_a.save_or_update_user(&VextaUser {
+            username: "bob".to_string(),
+            ed25519_pubkey: "bob_pubkey_123".to_string(),
+            created_at: 1725000000,
+            is_provisioned: true,
+            passcode: None,
+            registration_lock_hash: None,
+            encrypted_vault: Some("vault_blob".into()),
+            encrypted_friend_roster: Some("roster_blob".into()),
+            pre_key: None,
+            pre_key_signature: None,
+            auth_attempts: 0,
+            locked_until: None,
+        }).unwrap();
+
+        db_a.register_or_update_device("bob", "hw_hash_99", "Windows 11 Laptop").unwrap();
+        db_a.create_announcement("Test migration announcement").unwrap();
+        db_a.ban_ip("192.168.1.100", "Abuse", "Admin").unwrap();
+
+        // Export from A
+        let export_data = db_a.export_migration_data("v0.0.1", None).expect("Export failed");
+        assert_eq!(export_data.users.len(), 1);
+        assert_eq!(export_data.devices.len(), 1);
+        assert_eq!(export_data.announcements.len(), 1);
+        assert_eq!(export_data.banned_ips.len(), 1);
+
+        // Import into B
+        let import_stats = db_b.import_migration_data(&export_data).expect("Import failed");
+        assert_eq!(import_stats.imported_users, 1);
+        assert_eq!(import_stats.imported_devices, 1);
+        assert_eq!(import_stats.imported_announcements, 1);
+        assert_eq!(import_stats.imported_banned_ips, 1);
+
+        // Verify data in B
+        let imported_user = db_b.get_user("bob").unwrap().expect("User bob missing in DB B");
+        assert_eq!(imported_user.ed25519_pubkey, "bob_pubkey_123");
+        assert_eq!(imported_user.encrypted_vault, Some("vault_blob".into()));
+
+        let platform_dist = db_b.get_platform_distribution().unwrap();
+        assert!(platform_dist.iter().any(|p| p.platform == "Windows" && p.count == 1));
+
+        // Cleanup
+        let _ = std::fs::remove_file(&db_file_a);
+        let _ = std::fs::remove_file(format!("{}-wal", path_a));
+        let _ = std::fs::remove_file(format!("{}-shm", path_a));
+        let _ = std::fs::remove_file(&db_file_b);
+        let _ = std::fs::remove_file(format!("{}-wal", path_b));
+        let _ = std::fs::remove_file(format!("{}-shm", path_b));
     }
 }
 
