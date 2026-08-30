@@ -241,8 +241,8 @@ function formatInline(text) {
 }
 
 export default function App() {
-  const [secretKey, setSecretKey] = useState(() => localStorage.getItem('vexta_admin_token') || 'vexta_admin_secret_key_2026');
-  const [inputToken, setInputToken] = useState(() => localStorage.getItem('vexta_admin_token') || 'vexta_admin_secret_key_2026');
+  const [secretKey, setSecretKey] = useState(() => localStorage.getItem('vexta_admin_token') || '');
+  const [inputToken, setInputToken] = useState(() => localStorage.getItem('vexta_admin_token') || '');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [loginError, setLoginError] = useState('');
