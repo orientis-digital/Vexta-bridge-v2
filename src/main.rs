@@ -867,7 +867,18 @@ async fn check_account_handler(
         .get("cf-connecting-ip")
         .or_else(|| headers.get("x-forwarded-for"))
         .and_then(|h| h.to_str().ok())
+        .map(|s| s.split(',').next().unwrap_or(s).trim())
         .unwrap_or("127.0.0.1");
+
+    if state.is_ip_banned(client_ip) {
+        warn!("[FIREWALL] Blocked check-account probe from banned IP: {}", client_ip);
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "IP address is banned by administrator",
+            })),
+        );
+    }
 
     let clean_u = clean_user(&username);
     match state.db.get_user(&clean_u) {
