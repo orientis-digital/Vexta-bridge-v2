@@ -23,8 +23,12 @@ use std::net::SocketAddr;
 
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
-use tracing::{info, warn};
+use tracing::{info, warn, error, debug};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+fn clean_user(u: &str) -> String {
+    u.trim().trim_start_matches('@').to_lowercase()
+}
 
 #[tokio::main]
 async fn main() {
@@ -40,9 +44,9 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout))
         .init();
 
-    println!("====================================================");
-    println!(" [Vexta Bridge V2 - v0.0.1] Server Logging Initialized (INFO)");
-    println!("====================================================");
+    info!("====================================================");
+    info!(" 🚀 Vexta Bridge V2 ({} - {}) Server Starting", state::SERVER_VERSION, state::SERVER_NAME);
+    info!("====================================================");
 
     // 2. Initialize Shared App State (SQLite DB + Ed25519 Server Crypto)
     let db_path = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "vexta_bridge_v2.db".into());
@@ -105,14 +109,14 @@ async fn main() {
     // Admin UI Routing: Serve React bundle from 'admin-ui/dist' if built, else fallback to embedded HTML
     let admin_dist_path = std::path::Path::new("admin-ui/dist");
     let app = if admin_dist_path.exists() {
-        info!("📦 Serving compiled React Admin UI from 'admin-ui/dist'");
+        info!("[SYSTEM] Serving compiled React Admin UI from 'admin-ui/dist'");
         let serve_service = ServeDir::new("admin-ui/dist")
             .fallback(ServeFile::new("admin-ui/dist/index.html"));
         base_app
             .nest_service("/admin", serve_service.clone())
             .fallback_service(serve_service)
     } else {
-        info!("📄 Serving embedded fallback Admin UI");
+        info!("[SYSTEM] Serving embedded fallback Admin UI");
         base_app
             .route("/", get(admin_ui_handler))
             .route("/admin", get(admin_ui_handler))
@@ -121,8 +125,9 @@ async fn main() {
 
     let app = app
         .layer(cors)
+        .layer(middleware::from_fn(request_logging_middleware))
         .layer(middleware::from_fn(add_security_headers))
-        .with_state(state);
+        .with_state(state.clone());
 
     // 5. Start TCP Server on Configured Port (Default 8000)
     let port = std::env::var("PORT")
@@ -134,10 +139,45 @@ async fn main() {
         .parse()
         .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], port)));
 
-    info!("🚀 Vexta Bridge V2 - v0.0.1 listening on http://{}", addr);
+    let admin_secret_is_set = std::env::var("ADMIN_SECRET_TOKEN").or_else(|_| std::env::var("ADMIN_SECRET")).is_ok();
+    info!("[SYSTEM] Server configuration details:");
+    info!("  • Listen Address  : http://{}", addr);
+    info!("  • Database Path   : {}", db_path);
+    info!("  • Admin Secret    : {}", if admin_secret_is_set { "Configured" } else { "DEFAULT FALLBACK KEY (Warning: configure ADMIN_SECRET in production)" });
+    info!("  • Server PubKey   : {}...", &state.crypto.pubkey_base64[..16.min(state.crypto.pubkey_base64.len())]);
+    info!("  • Maintenance     : {}", if state.is_maintenance_enabled() { "ENABLED" } else { "DISABLED" });
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    info!("🚀 Vexta Bridge V2 listening on http://{}", addr);
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
+}
+
+async fn request_logging_middleware(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> impl IntoResponse {
+    let start = std::time::Instant::now();
+    let method = req.method().clone();
+    let uri = req.uri().clone();
+    let client_ip = req.headers().get("cf-connecting-ip")
+        .or_else(|| req.headers().get("x-forwarded-for"))
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+
+    let response = next.run(req).await;
+    let elapsed = start.elapsed();
+    let status = response.status();
+
+    if status.is_server_error() {
+        error!("[HTTP] {} {} -> {} ({:?}) [client: {}]", method, uri, status.as_u16(), elapsed, client_ip);
+    } else if status.is_client_error() {
+        warn!("[HTTP] {} {} -> {} ({:?}) [client: {}]", method, uri, status.as_u16(), elapsed, client_ip);
+    } else {
+        info!("[HTTP] {} {} -> {} ({:?}) [client: {}]", method, uri, status.as_u16(), elapsed, client_ip);
+    }
+
+    response
 }
 
 async fn add_security_headers(req: axum::extract::Request, next: axum::middleware::Next) -> impl IntoResponse {
@@ -178,9 +218,14 @@ fn verify_admin_auth(headers: &HeaderMap) -> bool {
     if let Some(token) = headers.get("x-admin-secret").or_else(|| headers.get("authorization")) {
         if let Ok(str_val) = token.to_str() {
             let clean_val = str_val.trim_start_matches("Bearer ").trim();
-            return constant_time_compare(clean_val, &expected_secret);
+            let valid = constant_time_compare(clean_val, &expected_secret);
+            if !valid {
+                warn!("[ADMIN AUTH] Unauthorized admin access attempt: Invalid secret token");
+            }
+            return valid;
         }
     }
+    warn!("[ADMIN AUTH] Unauthorized admin access attempt: Missing secret token header");
     false
 }
 
@@ -204,8 +249,11 @@ async fn admin_events_sse_handler(
     };
 
     if !auth_valid {
+        warn!("[ADMIN AUTH] Unauthorized SSE subscription attempt");
         return Err(StatusCode::UNAUTHORIZED);
     }
+
+    info!("[ADMIN] Client subscribed to real-time administrative SSE stream");
 
     let rx = state.broadcast_tx.subscribe();
     let stream = stream::unfold(rx, |mut rx| async move {
@@ -242,6 +290,7 @@ async fn admin_stats_handler(
         let active_sessions = state.active_sessions_count();
         let uptime_seconds = chrono::Utc::now().timestamp() - state.start_time;
         let (total_msgs, total_bytes) = state.get_traffic_stats();
+        debug!("[ADMIN] Telemetry metrics queried (Active Sessions: {}, Relayed Msgs: {})", active_sessions, total_msgs);
         return (
             StatusCode::OK,
             Json(json!({
@@ -286,6 +335,7 @@ async fn admin_list_banned_ips_handler(
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
     }
     if let Ok(list) = state.db.list_banned_ips() {
+        debug!("[ADMIN] Listed {} banned IPs", list.len());
         return (StatusCode::OK, Json(serde_json::to_value(list).unwrap()));
     }
     (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})))
@@ -303,7 +353,7 @@ async fn admin_ban_ip_handler(
     if let Ok(_) = state.db.ban_ip(&payload.ip, &reason, "Admin") {
         state.ban_ip_cache(payload.ip.clone(), reason.clone());
         let _ = state.db.log_audit_action("BAN_IP", &payload.ip, &reason);
-        info!("[Admin Console] Banned IP address '{}'", payload.ip);
+        info!("[ADMIN] Banned IP address '{}' (Reason: '{}')", payload.ip, reason);
         return (StatusCode::OK, Json(json!({"success": true, "banned_ip": payload.ip})));
     }
     (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})))
@@ -320,7 +370,7 @@ async fn admin_unban_ip_handler(
     if let Ok(_) = state.db.unban_ip(&ip) {
         state.unban_ip_cache(&ip);
         let _ = state.db.log_audit_action("UNBAN_IP", &ip, "Unbanned by admin");
-        info!("[Admin Console] Unbanned IP address '{}'", ip);
+        info!("[ADMIN] Unbanned IP address '{}'", ip);
         return (StatusCode::OK, Json(json!({"success": true, "unbanned_ip": ip})));
     }
     (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})))
@@ -346,7 +396,7 @@ async fn admin_enable_maintenance_handler(
     }
     state.set_maintenance(true);
     let _ = state.db.log_audit_action("ENABLE_MAINTENANCE", "server", "Server entered emergency maintenance mode");
-    info!("[Admin Console] Enabled emergency maintenance mode");
+    info!("[ADMIN] Emergency maintenance mode ENABLED");
     (StatusCode::OK, Json(json!({ "success": true, "maintenance_mode": true })))
 }
 
@@ -359,7 +409,7 @@ async fn admin_disable_maintenance_handler(
     }
     state.set_maintenance(false);
     let _ = state.db.log_audit_action("DISABLE_MAINTENANCE", "server", "Resumed normal bridge operation");
-    info!("[Admin Console] Disabled maintenance mode — resumed operations");
+    info!("[ADMIN] Emergency maintenance mode DISABLED — resumed normal operations");
     (StatusCode::OK, Json(json!({ "success": true, "maintenance_mode": false })))
 }
 
@@ -372,6 +422,7 @@ async fn admin_list_audit_logs_handler(
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
     }
     if let Ok(logs) = state.db.list_audit_logs(100) {
+        debug!("[ADMIN] Listed {} audit logs", logs.len());
         return (StatusCode::OK, Json(serde_json::to_value(logs).unwrap()));
     }
     (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})))
@@ -387,7 +438,7 @@ async fn admin_vacuum_db_handler(
     }
     if let Ok(_) = state.db.vacuum_database() {
         let _ = state.db.log_audit_action("VACUUM_DB", "sqlite", "Ran WAL checkpoint & database VACUUM");
-        info!("[Admin Console] Executed SQLite WAL checkpoint & VACUUM");
+        info!("[ADMIN] Executed SQLite database VACUUM & WAL truncation");
         return (StatusCode::OK, Json(json!({ "success": true, "message": "Database WAL truncated & vacuumed successfully" })));
     }
     (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})))
@@ -401,6 +452,7 @@ async fn admin_db_health_handler(
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
     }
     if let Ok(health) = state.db.get_db_health() {
+        debug!("[ADMIN] Fetched SQLite database health & integrity metrics");
         return (StatusCode::OK, Json(serde_json::to_value(health).unwrap()));
     }
     (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})))
@@ -415,6 +467,7 @@ async fn admin_top_user_analytics_handler(
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized admin token"})));
     }
     if let Ok(analytics) = state.db.get_top_user_analytics(50) {
+        debug!("[ADMIN] Fetched top user analytics ({} entries)", analytics.len());
         return (StatusCode::OK, Json(serde_json::to_value(analytics).unwrap()));
     }
     (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Database error"})))
@@ -430,6 +483,7 @@ async fn admin_list_sessions_handler(
     }
 
     let active_users = state.list_active_usernames();
+    debug!("[ADMIN] Listed active WebSocket sessions ({} users online)", active_users.len());
     (StatusCode::OK, Json(json!({ "active_sessions": active_users, "count": active_users.len() })))
 }
 
@@ -444,7 +498,7 @@ async fn admin_disconnect_session_handler(
     }
 
     let disconnected = state.disconnect_session(&username);
-    info!("[Admin Console] Disconnected WS session for user '{}' (success: {})", username, disconnected);
+    info!("[ADMIN] Forcibly disconnected WS sessions for user '@{}' (Found: {})", username, disconnected);
     (StatusCode::OK, Json(json!({ "success": true, "disconnected_username": username, "found": disconnected })))
 }
 
@@ -460,7 +514,7 @@ async fn admin_unlock_user_handler(
 
     if let Ok(_) = state.db.unlock_user_account(&username) {
         let _ = state.db.log_audit_action("UNLOCK_ACCOUNT", &username, "Unlocked failed login attempts");
-        info!("[Admin Console] Unlocked account '{}'", username);
+        info!("[ADMIN] Unlocked account for user '@{}'", username);
         return (StatusCode::OK, Json(json!({ "success": true, "unlocked_username": username })));
     }
 
@@ -479,7 +533,7 @@ async fn admin_revoke_device_handler(
 
     if let Ok(_) = state.db.revoke_device(&username, &hardware_hash) {
         let _ = state.db.log_audit_action("REVOKE_DEVICE", &username, &format!("Revoked device hash {}", hardware_hash));
-        info!("[Admin Console] Revoked device '{}' for user '{}'", hardware_hash, username);
+        info!("[ADMIN] Revoked device '{}' for user '@{}'", hardware_hash, username);
         return (StatusCode::OK, Json(json!({ "success": true, "revoked_device": hardware_hash, "username": username })));
     }
 
@@ -496,6 +550,7 @@ async fn admin_offline_messages_summary_handler(
     }
 
     if let Ok(summary) = state.db.get_offline_messages_summary() {
+        debug!("[ADMIN] Queried offline message queue summary ({} recipient queues)", summary.len());
         return (StatusCode::OK, Json(serde_json::to_value(summary).unwrap()));
     }
 
@@ -522,7 +577,7 @@ async fn admin_purge_offline_messages_handler(
 
     if let Ok(deleted_count) = state.db.purge_stale_offline_messages(cutoff) {
         let _ = state.db.log_audit_action("PURGE_OFFLINE_MESSAGES", "database", &format!("Deleted {} messages older than {} days", deleted_count, days));
-        info!("[Admin Console] Purged {} offline messages older than {} days", deleted_count, days);
+        info!("[ADMIN] Purged {} offline messages older than {} days", deleted_count, days);
         return (StatusCode::OK, Json(json!({ "success": true, "deleted_count": deleted_count, "cutoff_days": days })));
     }
 
@@ -539,6 +594,7 @@ async fn admin_list_users_handler(
     }
 
     if let Ok(users) = state.db.list_all_users() {
+        debug!("[ADMIN] Listed all registered users ({} total)", users.len());
         return (StatusCode::OK, Json(serde_json::to_value(users).unwrap()));
     }
 
@@ -557,7 +613,7 @@ async fn admin_delete_user_handler(
 
     let _ = state.db.delete_user(&username);
     state.disconnect_session(&username);
-    info!("[Admin Console] Deleted user '{}'", username);
+    info!("[ADMIN] Deleted user account '@{}'", username);
 
     (StatusCode::OK, Json(json!({"success": true, "deleted_username": username})))
 }
@@ -580,6 +636,7 @@ async fn admin_list_devices_handler(
                 }
             }
         }
+        debug!("[ADMIN] Listed all user devices ({} total)", all_devices.len());
         return (StatusCode::OK, Json(serde_json::to_value(all_devices).unwrap()));
     }
 
@@ -603,7 +660,7 @@ async fn admin_post_announcement_handler(
 
     if let Ok(id) = state.db.create_announcement(&payload.message) {
         let _ = state.db.log_audit_action("POST_ANNOUNCEMENT", &format!("#{}", id), &payload.message);
-        info!("[Admin Console] Created broadcast announcement #{}", id);
+        info!("[ADMIN] Created & broadcasted announcement #{}", id);
 
         // Broadcast announcement to all connected WebSocket sessions in real-time
         let announcement_inner = json!({
@@ -648,6 +705,7 @@ async fn admin_list_announcements_handler(
     }
 
     if let Ok(list) = state.db.list_announcements() {
+        debug!("[ADMIN] Listed announcements ({} total)", list.len());
         return (StatusCode::OK, Json(serde_json::to_value(list).unwrap()));
     }
 
@@ -665,6 +723,7 @@ async fn admin_delete_announcement_handler(
     }
 
     let _ = state.db.delete_announcement(id);
+    info!("[ADMIN] Deleted announcement #{}", id);
     (StatusCode::OK, Json(json!({"success": true, "deleted_id": id})))
 }
 
@@ -680,23 +739,28 @@ async fn check_account_handler(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("127.0.0.1");
 
-    info!("[Cloudflare API] Check account '{}' from IP: {}", username, client_ip);
-
-    match state.db.get_user(&username) {
-        Ok(Some(user)) => (
-            StatusCode::OK,
-            Json(json!({
-                "exists": true,
-                "username": user.username,
-                "ed25519_pubkey": user.ed25519_pubkey,
-            })),
-        ),
-        _ => (
-            StatusCode::OK,
-            Json(json!({
-                "exists": false,
-            })),
-        ),
+    let clean_u = clean_user(&username);
+    match state.db.get_user(&clean_u) {
+        Ok(Some(user)) => {
+            debug!("[HTTP API] Account existence check for '@{}' from IP: {} -> EXISTS", clean_u, client_ip);
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "exists": true,
+                    "username": user.username,
+                    "ed25519_pubkey": user.ed25519_pubkey,
+                })),
+            )
+        }
+        _ => {
+            debug!("[HTTP API] Account existence check for '@{}' from IP: {} -> NOT FOUND", clean_u, client_ip);
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "exists": false,
+                })),
+            )
+        }
     }
 }
 
@@ -706,10 +770,12 @@ async fn public_announcements_handler(
 ) -> Json<Value> {
     if let Ok(list) = state.db.list_announcements() {
         if !list.is_empty() {
+            debug!("[HTTP API] Retrieved {} public announcements", list.len());
             return Json(serde_json::to_value(list).unwrap());
         }
     }
 
+    debug!("[HTTP API] Serving default system announcement");
     Json(json!([
         {
             "id": 1,
@@ -744,6 +810,8 @@ async fn health_handler(
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     };
+
+    debug!("[HTTP API] Health check evaluated -> status: '{}' (DB: {}, Sessions: {}, Uptime: {}s)", status_str, if db_ping_ok { "connected" } else { "error" }, active_sessions, uptime);
 
     let payload = json!({
         "status": status_str,

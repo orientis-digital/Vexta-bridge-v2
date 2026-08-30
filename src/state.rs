@@ -6,6 +6,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
+use tracing::{info, debug, warn};
+
 pub type Tx = UnboundedSender<Message>;
 
 pub const SERVER_VERSION: &str = "v0.0.1";
@@ -40,11 +42,14 @@ impl AppState {
         let ip_ban_list = Arc::new(DashMap::new());
 
         // Cache initial banned IPs from SQLite
+        let mut banned_count = 0;
         if let Ok(banned_ips) = db.list_banned_ips() {
             for b in banned_ips {
                 ip_ban_list.insert(b.ip, b.reason);
+                banned_count += 1;
             }
         }
+        info!("[SYSTEM] AppState initialized (SQLite DB: '{}', cached {} banned IPs)", db_path, banned_count);
 
         Self {
             db,
@@ -66,6 +71,7 @@ impl AppState {
 
     pub fn set_maintenance(&self, enabled: bool) {
         self.maintenance_mode.store(enabled, Ordering::Relaxed);
+        info!("[SYSTEM] Emergency maintenance mode set to: {}", enabled);
         self.emit_event(&serde_json::json!({
             "event": "maintenance_changed",
             "enabled": enabled,
@@ -79,6 +85,7 @@ impl AppState {
 
     pub fn ban_ip_cache(&self, ip: String, reason: String) {
         let clean_ip = ip.trim().to_string();
+        info!("[FIREWALL] Banned IP '{}' (Reason: '{}')", clean_ip, reason);
         self.ip_ban_list.insert(clean_ip.clone(), reason);
         self.emit_event(&serde_json::json!({
             "event": "ip_banned",
@@ -88,6 +95,7 @@ impl AppState {
 
     pub fn unban_ip_cache(&self, ip: &str) {
         let clean_ip = ip.trim();
+        info!("[FIREWALL] Unbanned IP '{}'", clean_ip);
         self.ip_ban_list.remove(clean_ip);
         self.emit_event(&serde_json::json!({
             "event": "ip_unbanned",
@@ -102,10 +110,13 @@ impl AppState {
     pub fn register_session(&self, username: String, conn_id: usize, tx: Tx) {
         let user_sessions = self.active_sessions.entry(username.clone()).or_insert_with(DashMap::new);
         user_sessions.insert(conn_id, tx);
+        let user_conns = user_sessions.len();
+        let total_active = self.active_sessions_count();
+        info!("[STATE] Registered session conn #{} for user '@{}' (User active sessions: {}, Global active sessions: {})", conn_id, username, user_conns, total_active);
         self.emit_event(&serde_json::json!({
             "event": "session_connected",
             "username": username,
-            "active_count": self.active_sessions_count(),
+            "active_count": total_active,
         }).to_string());
     }
 
@@ -120,10 +131,12 @@ impl AppState {
         if should_remove {
             self.active_sessions.remove(username);
         }
+        let total_active = self.active_sessions_count();
+        info!("[STATE] Unregistered session conn #{} for user '@{}' (Global active sessions: {})", conn_id, username, total_active);
         self.emit_event(&serde_json::json!({
             "event": "session_disconnected",
             "username": username,
-            "active_count": self.active_sessions_count(),
+            "active_count": total_active,
         }).to_string());
     }
 
@@ -164,10 +177,12 @@ impl AppState {
     pub fn disconnect_session(&self, username: &str) -> bool {
         let removed = self.active_sessions.remove(username).is_some();
         if removed {
+            let total_active = self.active_sessions_count();
+            warn!("[STATE] Force disconnected all active sessions for user '@{}' (Remaining global sessions: {})", username, total_active);
             self.emit_event(&serde_json::json!({
                 "event": "session_disconnected",
                 "username": username,
-                "active_count": self.active_sessions_count(),
+                "active_count": total_active,
             }).to_string());
         }
         removed
@@ -176,6 +191,7 @@ impl AppState {
     pub fn record_traffic(&self, bytes: u64) {
         let total_msgs = self.total_messages_relayed.fetch_add(1, Ordering::Relaxed) + 1;
         let total_bytes = self.total_bytes_relayed.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        debug!("[STATE] Relayed {} bytes (Lifetime total msgs: {}, Lifetime traffic: {} bytes)", bytes, total_msgs, total_bytes);
 
         self.emit_event(&serde_json::json!({
             "event": "traffic_recorded",

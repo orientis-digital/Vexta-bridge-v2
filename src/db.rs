@@ -1,6 +1,7 @@
 use crate::models::{BlindMessage, FriendRequest, UserDevice, VextaUser};
 use rusqlite::{params, Connection, Result};
 use std::sync::{Arc, Mutex};
+use tracing::{info, debug, warn};
 
 fn clean_user(u: &str) -> String {
     u.trim().trim_start_matches('@').to_lowercase()
@@ -177,6 +178,8 @@ impl DbManager {
              UPDATE offline_messages SET recipient = LOWER(LTRIM(recipient, '@')), sender = LOWER(LTRIM(sender, '@'));"
         );
 
+        info!("[DB] SQLite database initialized at '{}' (WAL mode, foreign keys ON)", db_path);
+
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             db_path: db_path.to_string(),
@@ -208,6 +211,7 @@ impl DbManager {
                 user.locked_until,
             ],
         )?;
+        debug!("[DB] Saved/updated account for user '@{}'", clean_username);
         Ok(())
     }
 
@@ -599,7 +603,9 @@ impl DbManager {
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![clean_recipient, clean_sender, ciphertext, timestamp, if is_group { 1 } else { 0 }],
         )?;
-        Ok(conn.last_insert_rowid())
+        let msg_id = conn.last_insert_rowid();
+        debug!("[DB] Enqueued offline message #{} for recipient '@{}' from '@{}' (group: {})", msg_id, clean_recipient, clean_sender, is_group);
+        Ok(msg_id)
     }
 
     pub fn fetch_and_clear_offline_messages(&self, recipient: &str) -> Result<Vec<BlindMessage>> {
@@ -632,6 +638,7 @@ impl DbManager {
             params![clean_recipient],
         )?;
 
+        debug!("[DB] Fetched and cleared {} offline messages for recipient '@{}'", msgs.len(), clean_recipient);
         Ok(msgs)
     }
 
@@ -693,6 +700,12 @@ impl DbManager {
             params![attempts, locked_until, clean_username],
         )?;
 
+        if attempts >= 5 {
+            warn!("[DB] User '@{}' locked out for 15 minutes after {} failed auth attempts", clean_username, attempts);
+        } else {
+            debug!("[DB] Recorded failed auth attempt #{}/5 for user '@{}'", attempts, clean_username);
+        }
+
         Ok(attempts)
     }
 
@@ -714,6 +727,7 @@ impl DbManager {
             "DELETE FROM offline_messages WHERE timestamp < ?1",
             params![older_than_timestamp],
         )?;
+        info!("[DB] Purged {} stale offline messages older than timestamp {}", deleted, older_than_timestamp);
         Ok(deleted)
     }
 
@@ -725,12 +739,14 @@ impl DbManager {
             "INSERT OR REPLACE INTO ip_bans (ip, reason, banned_by, created_at) VALUES (?1, ?2, ?3, ?4)",
             params![ip.trim(), reason, banned_by, now],
         )?;
+        info!("[DB] Stored IP ban for '{}' (Reason: '{}', Banned By: '{}')", ip.trim(), reason, banned_by);
         Ok(())
     }
 
     pub fn unban_ip(&self, ip: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM ip_bans WHERE ip = ?1", params![ip.trim()])?;
+        info!("[DB] Removed IP ban for '{}'", ip.trim());
         Ok(())
     }
 
@@ -844,6 +860,7 @@ impl DbManager {
     pub fn vacuum_database(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")?;
+        info!("[DB] Executed PRAGMA wal_checkpoint(TRUNCATE) and VACUUM on '{}'", self.db_path);
         Ok(())
     }
 

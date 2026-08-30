@@ -18,6 +18,8 @@ impl ServerCrypto {
         let pubkey_bytes = verifying_key.to_bytes();
         let pubkey_base64 = STANDARD.encode(pubkey_bytes);
 
+        tracing::info!("[CRYPTO] Initialized Server Ed25519 signing keypair (Public Key: {}...)", &pubkey_base64[..16.min(pubkey_base64.len())]);
+
         Self {
             signing_key,
             verifying_key,
@@ -37,7 +39,9 @@ impl ServerCrypto {
 
     pub fn sign_nonce(&self, nonce: &str) -> String {
         let sig = self.signing_key.sign(nonce.as_bytes());
-        STANDARD.encode(sig.to_bytes())
+        let sig_b64 = STANDARD.encode(sig.to_bytes());
+        tracing::debug!("[CRYPTO] Signed challenge nonce (length: {} chars) -> signature: {}...", nonce.len(), &sig_b64[..12.min(sig_b64.len())]);
+        sig_b64
     }
 
     pub fn verify_client_signature(
@@ -46,28 +50,43 @@ impl ServerCrypto {
         signature_base64: &str,
     ) -> bool {
         if pubkey_base64.trim().is_empty() || signature_base64.trim().is_empty() || nonce.trim().is_empty() {
+            tracing::warn!("[CRYPTO] Signature verification failed: Empty pubkey, nonce, or signature");
             return false;
         }
 
         let pubkey_bytes: Vec<u8> = match STANDARD.decode(pubkey_base64) {
             Ok(b) => b,
-            Err(_) => return false,
+            Err(e) => {
+                tracing::warn!("[CRYPTO] Public key base64 decode error: {:?}", e);
+                return false;
+            }
         };
 
         let sig_bytes: Vec<u8> = match STANDARD.decode(signature_base64) {
             Ok(b) => b,
-            Err(_) => return false,
+            Err(e) => {
+                tracing::warn!("[CRYPTO] Signature base64 decode error: {:?}", e);
+                return false;
+            }
         };
 
         if pubkey_bytes.len() == 32 {
             if let Ok(verifying_key) = VerifyingKey::try_from(pubkey_bytes.as_slice()) {
                 if let Ok(signature) = Signature::from_slice(&sig_bytes) {
-                    return verifying_key.verify(nonce.as_bytes(), &signature).is_ok();
+                    let valid = verifying_key.verify(nonce.as_bytes(), &signature).is_ok();
+                    if !valid {
+                        tracing::warn!("[CRYPTO] Ed25519 cryptographic signature mismatch for client key");
+                    }
+                    return valid;
                 }
             }
         }
 
         // For non-32 byte public keys (e.g., RSA SPKI B64), ensure non-empty payload and valid base64 signature
-        !pubkey_bytes.is_empty() && !sig_bytes.is_empty()
+        let non_empty = !pubkey_bytes.is_empty() && !sig_bytes.is_empty();
+        if !non_empty {
+            tracing::warn!("[CRYPTO] Fallback non-Ed25519 key/signature payload is empty");
+        }
+        non_empty
     }
 }
