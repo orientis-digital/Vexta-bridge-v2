@@ -565,6 +565,10 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                         if let Some(ref username) = authenticated_username {
                             info!("[WS DEVICE] User '@{}' revoked device hash: {}", username, hardware_hash);
                             let _ = state.db.revoke_device(username, &hardware_hash);
+                            if let Ok(devices) = state.db.list_devices(username) {
+                                let resp = BridgeFrame::DevicesList { devices };
+                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                            }
                         }
                     }
 
