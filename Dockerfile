@@ -61,7 +61,7 @@ ENV RUST_LOG=info \
 EXPOSE 8000
 
 # Health check
-HEALTHCHECK --interval=10s --timeout=3s --start-period=8s --retries=3 \
-  CMD curl -f -s http://127.0.0.1:8000/health > /dev/null || exit 1
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
+  CMD curl -f -s http://127.0.0.1:8000/health || exit 1
 
 ENTRYPOINT ["/app/entrypoint.sh"]

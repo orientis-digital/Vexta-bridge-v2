@@ -40,8 +40,7 @@ services:
     networks:
       - vexta-v2-net
     depends_on:
-      vexta-bridge-v2:
-        condition: service_healthy
+      - vexta-bridge-v2
 
 volumes:
   vexta_bridge_data:
