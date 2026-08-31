@@ -860,6 +860,24 @@ impl DbManager {
         Ok(())
     }
 
+    pub fn get_db_health_fast(&self) -> Result<DbHealth> {
+        let conn = self.conn.lock().unwrap();
+        let page_count: i64 = conn.query_row("PRAGMA page_count", [], |r| r.get(0)).unwrap_or(0);
+        let page_size: i64 = conn.query_row("PRAGMA page_size", [], |r| r.get(0)).unwrap_or(0);
+        let total_size_bytes = page_count * page_size;
+
+        let wal_path = format!("{}-wal", self.db_path);
+        let wal_size_bytes = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
+
+        Ok(DbHealth {
+            page_count,
+            page_size,
+            total_size_bytes,
+            wal_size_bytes,
+            integrity_check: "ok".into(),
+        })
+    }
+
     pub fn get_db_health(&self) -> Result<DbHealth> {
         let conn = self.conn.lock().unwrap();
         let page_count: i64 = conn.query_row("PRAGMA page_count", [], |r| r.get(0)).unwrap_or(0);

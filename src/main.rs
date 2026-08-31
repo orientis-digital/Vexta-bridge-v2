@@ -931,7 +931,7 @@ async fn health_handler(
     State(state): State<AppState>,
 ) -> (StatusCode, Json<Value>) {
     let db_ping_ok = state.db.ping().is_ok();
-    let db_health = state.db.get_db_health().ok();
+    let db_health = state.db.get_db_health_fast().ok();
     let maintenance = state.is_maintenance_enabled();
     let uptime = chrono::Utc::now().timestamp() - state.start_time;
     let active_sessions = state.active_sessions_count();

@@ -183,9 +183,11 @@ impl AppState {
     }
 
     pub fn register_session(&self, username: String, conn_id: usize, tx: Tx) {
-        let user_sessions = self.active_sessions.entry(username.clone()).or_insert_with(DashMap::new);
-        user_sessions.insert(conn_id, tx);
-        let user_conns = user_sessions.len();
+        let user_conns = {
+            let user_sessions = self.active_sessions.entry(username.clone()).or_insert_with(DashMap::new);
+            user_sessions.insert(conn_id, tx);
+            user_sessions.len()
+        };
         let total_active = self.active_sessions_count();
         info!("[STATE] Registered session conn #{} for user '@{}' (User active sessions: {}, Global active sessions: {})", conn_id, username, user_conns, total_active);
         self.emit_event(&serde_json::json!({
