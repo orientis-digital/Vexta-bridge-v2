@@ -34,7 +34,7 @@ RUN cargo build --release
 # ------------------------------------------------------------------------------
 FROM alpine:latest
 
-RUN apk add --no-cache ca-certificates tzdata curl \
+RUN apk add --no-cache ca-certificates tzdata curl su-exec \
     && addgroup -g 10001 -S vexta \
     && adduser -u 10001 -S vexta -G vexta
 
@@ -46,21 +46,22 @@ COPY --from=builder /app/target/release/vexta-bridge-v2 /app/vexta-bridge-v2
 # Copy compiled React Admin UI static bundle
 COPY --from=ui-builder /app/admin-ui/dist /app/admin-ui/dist
 
-# Create data directory and set permissions for non-root user
-RUN mkdir -p /app/data && chown -R vexta:vexta /app
-
-USER vexta:vexta
+# Copy container entrypoint script
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh && mkdir -p /app/data && chown -R vexta:vexta /app
 
 # Persistent volume for SQLite WAL database
 VOLUME ["/app/data"]
 
 ENV RUST_LOG=info \
+    HOST=0.0.0.0 \
+    PORT=8000 \
     DATABASE_PATH=/app/data/vexta_bridge_v2.db
 
 EXPOSE 8000
 
 # Health check
-HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=10s --timeout=3s --start-period=8s --retries=3 \
   CMD curl -f -s http://127.0.0.1:8000/health > /dev/null || exit 1
 
-ENTRYPOINT ["/app/vexta-bridge-v2"]
+ENTRYPOINT ["/app/entrypoint.sh"]
