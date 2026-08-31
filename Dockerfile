@@ -62,6 +62,6 @@ EXPOSE 8000
 
 # Health check
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
-  CMD curl -f -s http://127.0.0.1:8000/health || exit 1
+  CMD ["curl", "-f", "http://127.0.0.1:8000/health"]
 
 ENTRYPOINT ["/app/entrypoint.sh"]
