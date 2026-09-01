@@ -462,19 +462,24 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                                 _ => None,
                             });
 
-                            if let Some(req_id) = target_id {
+                            let other_party = if let Some(req_id) = target_id {
+                                let other = state.db.get_friend_request_other_party(req_id, user).ok().flatten();
                                 if let Err(e) = state.db.update_friend_request_status(req_id, "accepted") {
                                     error!("[WS ROSTER] Failed to accept friend request #{}: {:?}", req_id, e);
                                 } else {
                                     info!("[WS ROSTER] Friend request #{} ACCEPTED by user '@{}'", req_id, user);
                                 }
+                                other
                             } else if let Some(ref other_user) = target_str {
                                 if let Err(e) = state.db.update_friend_request_status_by_user(user, other_user, "accepted") {
                                     error!("[WS ROSTER] Failed to accept friend request between '@{}' and '@{}': {:?}", user, other_user, e);
                                 } else {
                                     info!("[WS ROSTER] Friend request between '@{}' and '@{}' ACCEPTED by user '@{}'", other_user, user, user);
                                 }
-                            }
+                                Some(clean_user(other_user))
+                            } else {
+                                None
+                            };
 
                             // Push updated state to the accepting user
                             if let Ok(friends) = state.db.list_friends(user) {
@@ -484,6 +489,18 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                             if let Ok(reqs) = state.db.list_pending_requests(user) {
                                 let push = BridgeFrame::FriendRequestsList { requests: reqs };
                                 let _ = tx.send(Message::Text(serde_json::to_string(&push).unwrap()));
+                            }
+
+                            // Live push updated state to the requester if online
+                            if let Some(ref other) = other_party {
+                                if let Ok(friends) = state.db.list_friends(other) {
+                                    let resp = BridgeFrame::FriendsList { friends };
+                                    let _ = state.send_to_user(other, Message::Text(serde_json::to_string(&resp).unwrap()));
+                                }
+                                if let Ok(reqs) = state.db.list_pending_requests(other) {
+                                    let push = BridgeFrame::FriendRequestsList { requests: reqs };
+                                    let _ = state.send_to_user(other, Message::Text(serde_json::to_string(&push).unwrap()));
+                                }
                             }
                         }
                     }
@@ -501,24 +518,37 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                                 _ => None,
                             });
 
-                            if let Some(req_id) = target_id {
+                            let other_party = if let Some(req_id) = target_id {
+                                let other = state.db.get_friend_request_other_party(req_id, user).ok().flatten();
                                 if let Err(e) = state.db.update_friend_request_status(req_id, "rejected") {
                                     error!("[WS ROSTER] Failed to reject friend request #{}: {:?}", req_id, e);
                                 } else {
                                     info!("[WS ROSTER] Friend request #{} REJECTED by user '@{}'", req_id, user);
                                 }
+                                other
                             } else if let Some(ref other_user) = target_str {
                                 if let Err(e) = state.db.update_friend_request_status_by_user(user, other_user, "rejected") {
                                     error!("[WS ROSTER] Failed to reject friend request between '@{}' and '@{}': {:?}", user, other_user, e);
                                 } else {
                                     info!("[WS ROSTER] Friend request with '@{}' REJECTED by user '@{}'", other_user, user);
                                 }
-                            }
+                                Some(clean_user(other_user))
+                            } else {
+                                None
+                            };
 
                             // Push updated state to the rejecting user
                             if let Ok(reqs) = state.db.list_pending_requests(user) {
                                 let push = BridgeFrame::FriendRequestsList { requests: reqs };
                                 let _ = tx.send(Message::Text(serde_json::to_string(&push).unwrap()));
+                            }
+
+                            // Live push to other party if online
+                            if let Some(ref other) = other_party {
+                                if let Ok(reqs) = state.db.list_pending_requests(other) {
+                                    let push = BridgeFrame::FriendRequestsList { requests: reqs };
+                                    let _ = state.send_to_user(other, Message::Text(serde_json::to_string(&push).unwrap()));
+                                }
                             }
                         }
                     }
@@ -548,6 +578,26 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                             let clean_friend = clean_user(&friend_username);
                             info!("[WS ROSTER] User '@{}' removed friend '@{}'", username, clean_friend);
                             let _ = state.db.remove_friend(username, &clean_friend);
+
+                            // Push updated state to the user who performed the removal
+                            if let Ok(friends) = state.db.list_friends(username) {
+                                let resp = BridgeFrame::FriendsList { friends };
+                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                            }
+                            if let Ok(reqs) = state.db.list_pending_requests(username) {
+                                let push = BridgeFrame::FriendRequestsList { requests: reqs };
+                                let _ = tx.send(Message::Text(serde_json::to_string(&push).unwrap()));
+                            }
+
+                            // Live push updated state to the other side (the removed friend) if online
+                            if let Ok(friends) = state.db.list_friends(&clean_friend) {
+                                let resp = BridgeFrame::FriendsList { friends };
+                                let _ = state.send_to_user(&clean_friend, Message::Text(serde_json::to_string(&resp).unwrap()));
+                            }
+                            if let Ok(reqs) = state.db.list_pending_requests(&clean_friend) {
+                                let push = BridgeFrame::FriendRequestsList { requests: reqs };
+                                let _ = state.send_to_user(&clean_friend, Message::Text(serde_json::to_string(&push).unwrap()));
+                            }
                         }
                     }
 
