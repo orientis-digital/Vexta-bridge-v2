@@ -809,7 +809,7 @@ async fn admin_post_announcement_handler(
         let frame_str = broadcast_frame.to_string();
         for user_entry in state.active_sessions.iter() {
             for tx in user_entry.value().iter() {
-                let _ = tx.send(Message::Text(frame_str.clone()));
+                let _ = tx.try_send(Message::Text(frame_str.clone()));
             }
         }
 

@@ -9,8 +9,39 @@ fn clean_user(u: &str) -> String {
 
 #[derive(Clone)]
 pub struct DbManager {
-    conn: Arc<Mutex<Connection>>,
+    writer: Arc<Mutex<Connection>>,
+    reader_pool: Arc<Mutex<Vec<Connection>>>,
     db_path: String,
+}
+
+pub struct ReaderGuard<'a> {
+    conn: Option<Connection>,
+    pool: &'a Mutex<Vec<Connection>>,
+}
+
+impl<'a> std::ops::Deref for ReaderGuard<'a> {
+    type Target = Connection;
+    fn deref(&self) -> &Self::Target {
+        self.conn.as_ref().unwrap()
+    }
+}
+
+impl<'a> std::ops::DerefMut for ReaderGuard<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.conn.as_mut().unwrap()
+    }
+}
+
+impl<'a> Drop for ReaderGuard<'a> {
+    fn drop(&mut self) {
+        if let Some(conn) = self.conn.take() {
+            if let Ok(mut pool) = self.pool.lock() {
+                if pool.len() < 16 {
+                    pool.push(conn);
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -79,17 +110,46 @@ pub struct DbHealth {
 
 #[allow(dead_code)]
 impl DbManager {
-    pub fn new(db_path: &str) -> Result<Self> {
+    fn open_connection(db_path: &str) -> Result<Connection> {
         let conn = Connection::open(db_path)?;
-
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
              PRAGMA busy_timeout = 5000;
+             PRAGMA cache_size = -64000;
+             PRAGMA temp_store = MEMORY;
+             PRAGMA mmap_size = 268435456;
              PRAGMA foreign_keys = ON;",
         )?;
+        Ok(conn)
+    }
+
+    #[inline]
+    fn writer(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.writer.lock().unwrap()
+    }
+
+    #[inline]
+    fn reader(&self) -> Result<ReaderGuard<'_>> {
+        let maybe_conn = {
+            let mut pool = self.reader_pool.lock().unwrap();
+            pool.pop()
+        };
+        let conn = match maybe_conn {
+            Some(c) => c,
+            None => Self::open_connection(&self.db_path)?,
+        };
+        Ok(ReaderGuard {
+            conn: Some(conn),
+            pool: &self.reader_pool,
+        })
+    }
+
+    pub fn new(db_path: &str) -> Result<Self> {
+        let writer = Self::open_connection(db_path)?;
 
         // Initialize Schema
-        conn.execute_batch(
+        writer.execute_batch(
             "CREATE TABLE IF NOT EXISTS users (
                 username TEXT PRIMARY KEY,
                 ed25519_pubkey TEXT NOT NULL,
@@ -167,26 +227,34 @@ impl DbManager {
         )?;
 
         // Column migration for existing db files
-        let _ = conn.execute("ALTER TABLE users ADD COLUMN encrypted_friend_roster TEXT", []);
+        let _ = writer.execute("ALTER TABLE users ADD COLUMN encrypted_friend_roster TEXT", []);
 
         // Username normalization migration for existing data
-        let _ = conn.execute_batch(
+        let _ = writer.execute_batch(
             "UPDATE users SET username = LOWER(LTRIM(username, '@'));
              UPDATE friend_requests SET sender = LOWER(LTRIM(sender, '@')), recipient = LOWER(LTRIM(recipient, '@'));
              UPDATE user_devices SET username = LOWER(LTRIM(username, '@'));
              UPDATE offline_messages SET recipient = LOWER(LTRIM(recipient, '@'));"
         );
 
-        info!("[DB] SQLite database initialized at '{}' (WAL mode, foreign keys ON)", db_path);
+        let mut readers = Vec::with_capacity(4);
+        for _ in 0..2 {
+            if let Ok(r) = Self::open_connection(db_path) {
+                readers.push(r);
+            }
+        }
+
+        info!("[DB] SQLite database initialized at '{}' (WAL mode, synchronous=NORMAL, foreign keys ON, read pool ready)", db_path);
 
         Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
+            writer: Arc::new(Mutex::new(writer)),
+            reader_pool: Arc::new(Mutex::new(readers)),
             db_path: db_path.to_string(),
         })
     }
 
     pub fn save_or_update_user(&self, user: &VextaUser) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         let clean_username = clean_user(&user.username);
         conn.execute(
             "INSERT INTO users (username, ed25519_pubkey, created_at, is_provisioned, passcode, registration_lock_hash, encrypted_vault, encrypted_friend_roster, pre_key, pre_key_signature, auth_attempts, locked_until)
@@ -215,7 +283,7 @@ impl DbManager {
     }
 
     pub fn get_user(&self, username: &str) -> Result<Option<VextaUser>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.reader()?;
         let clean_username = clean_user(username);
         let mut stmt = conn.prepare(
             "SELECT username, ed25519_pubkey, created_at, is_provisioned, passcode, registration_lock_hash, encrypted_vault, encrypted_friend_roster, pre_key, pre_key_signature, auth_attempts, locked_until FROM users WHERE LOWER(LTRIM(username, '@')) = ?1",
@@ -244,7 +312,7 @@ impl DbManager {
     }
 
     pub fn update_vault(&self, username: &str, vault_data: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         let clean_username = clean_user(username);
         conn.execute(
             "UPDATE users SET encrypted_vault = ?1 WHERE LOWER(LTRIM(username, '@')) = ?2",
@@ -254,7 +322,7 @@ impl DbManager {
     }
 
     pub fn update_friend_roster(&self, username: &str, roster_data: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         let clean_username = clean_user(username);
         conn.execute(
             "UPDATE users SET encrypted_friend_roster = ?1 WHERE LOWER(LTRIM(username, '@')) = ?2",
@@ -264,7 +332,7 @@ impl DbManager {
     }
 
     pub fn update_recovery_lock(&self, username: &str, lock_hash: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         let clean_username = clean_user(username);
         conn.execute(
             "UPDATE users SET registration_lock_hash = ?1 WHERE LOWER(LTRIM(username, '@')) = ?2",
@@ -274,7 +342,7 @@ impl DbManager {
     }
 
     pub fn update_user_pubkey(&self, username: &str, new_pubkey: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         let clean_username = clean_user(username);
         conn.execute(
             "UPDATE users SET ed25519_pubkey = ?1 WHERE LOWER(LTRIM(username, '@')) = ?2",
@@ -284,7 +352,7 @@ impl DbManager {
     }
 
     pub fn delete_user(&self, username: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         let clean_username = clean_user(username);
         conn.execute("DELETE FROM users WHERE LOWER(LTRIM(username, '@')) = ?1", params![clean_username])?;
         Ok(())
@@ -292,7 +360,7 @@ impl DbManager {
 
     // --- Admin Operations ---
     pub fn get_admin_stats(&self) -> Result<AdminStats> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.reader()?;
         let total_users: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0)).unwrap_or(0);
         let total_queued_offline_messages: i64 = conn.query_row("SELECT COUNT(*) FROM offline_messages", [], |r| r.get(0)).unwrap_or(0);
         let total_registered_devices: i64 = conn.query_row("SELECT COUNT(*) FROM user_devices", [], |r| r.get(0)).unwrap_or(0);
@@ -324,7 +392,7 @@ impl DbManager {
     }
 
     pub fn list_all_users(&self) -> Result<Vec<VextaUser>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.reader()?;
         let mut stmt = conn.prepare(
             "SELECT username, ed25519_pubkey, created_at, is_provisioned, passcode, registration_lock_hash, encrypted_vault, encrypted_friend_roster, pre_key, pre_key_signature, auth_attempts, locked_until FROM users ORDER BY created_at DESC",
         )?;
@@ -355,7 +423,7 @@ impl DbManager {
     }
 
     pub fn create_announcement(&self, message: &str) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         let now = chrono::Utc::now().timestamp();
         conn.execute(
             "INSERT INTO announcements (message, created_at) VALUES (?1, ?2)",
@@ -365,7 +433,7 @@ impl DbManager {
     }
 
     pub fn list_announcements(&self) -> Result<Vec<Announcement>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.reader()?;
         let mut stmt = conn.prepare(
             "SELECT id, message, created_at FROM announcements ORDER BY created_at DESC",
         )?;
@@ -386,14 +454,14 @@ impl DbManager {
     }
 
     pub fn delete_announcement(&self, id: i64) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         conn.execute("DELETE FROM announcements WHERE id = ?1", params![id])?;
         Ok(())
     }
 
     // --- Friend Requests & Friends Roster ---
     pub fn create_friend_request(&self, sender: &str, recipient: &str) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         let now = chrono::Utc::now().timestamp();
         let clean_sender = clean_user(sender);
         let clean_recipient = clean_user(recipient);
@@ -407,7 +475,7 @@ impl DbManager {
     }
 
     pub fn update_friend_request_status(&self, req_id: i64, status: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         conn.execute(
             "UPDATE friend_requests SET status = ?1 WHERE id = ?2",
             params![status, req_id],
@@ -416,7 +484,7 @@ impl DbManager {
     }
 
     pub fn update_friend_request_status_by_user(&self, user: &str, other_user: &str, status: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         let clean_u = clean_user(user);
         let clean_other = clean_user(other_user);
         conn.execute(
@@ -429,7 +497,7 @@ impl DbManager {
     }
 
     pub fn list_friends(&self, username: &str) -> Result<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.reader()?;
         let clean_username = clean_user(username);
         let mut stmt = conn.prepare(
             "SELECT CASE WHEN LOWER(LTRIM(sender, '@')) = ?1 THEN recipient ELSE sender END AS friend
@@ -446,7 +514,7 @@ impl DbManager {
     }
 
     pub fn list_pending_requests(&self, username: &str) -> Result<Vec<FriendRequest>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.reader()?;
         let clean_username = clean_user(username);
         let mut stmt = conn.prepare(
             "SELECT id, sender, recipient, status, created_at
@@ -474,7 +542,7 @@ impl DbManager {
     /// Returns the other party's username for a given request id.
     /// If current_user is the recipient, returns the sender, and vice-versa.
     pub fn get_friend_request_other_party(&self, req_id: i64, current_user: &str) -> Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.reader()?;
         let clean_current = clean_user(current_user);
         let result = conn.query_row(
             "SELECT sender, recipient FROM friend_requests WHERE id = ?1",
@@ -491,13 +559,13 @@ impl DbManager {
                 }
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(e),
         }
     }
 
     /// Returns the sender of a pending request between two users.
     pub fn get_friend_request_sender_by_users(&self, user_a: &str, user_b: &str) -> Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.reader()?;
         let clean_a = clean_user(user_a);
         let clean_b = clean_user(user_b);
         let result = conn.query_row(
@@ -511,12 +579,12 @@ impl DbManager {
         match result {
             Ok(s) => Ok(Some(s)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(e),
         }
     }
 
     pub fn remove_friend(&self, username: &str, friend_username: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         let clean_username = clean_user(username);
         let clean_friend = clean_user(friend_username);
         conn.execute(
@@ -535,7 +603,7 @@ impl DbManager {
         hardware_hash: &str,
         device_name: &str,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         let now = chrono::Utc::now().timestamp();
         let clean_username = clean_user(username);
         conn.execute(
@@ -549,7 +617,7 @@ impl DbManager {
     }
 
     pub fn list_devices(&self, username: &str) -> Result<Vec<UserDevice>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.reader()?;
         let clean_username = clean_user(username);
         let mut stmt = conn.prepare(
             "SELECT id, username, hardware_hash, device_name, device_type, registered_at, last_active
@@ -576,7 +644,7 @@ impl DbManager {
     }
 
     pub fn revoke_device(&self, username: &str, hardware_hash: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         let clean_username = clean_user(username);
         conn.execute(
             "DELETE FROM user_devices WHERE LOWER(LTRIM(username, '@')) = ?1 AND hardware_hash = ?2",
@@ -593,7 +661,7 @@ impl DbManager {
         timestamp: i64,
         is_group: bool,
     ) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         let clean_recipient = clean_user(recipient);
         conn.execute(
             "INSERT INTO offline_messages (recipient, ciphertext, timestamp, is_group)
@@ -606,7 +674,7 @@ impl DbManager {
     }
 
     pub fn fetch_and_clear_offline_messages(&self, recipient: &str) -> Result<Vec<BlindMessage>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         let clean_recipient = clean_user(recipient);
         let mut stmt = conn.prepare(
             "SELECT id, recipient, ciphertext, timestamp, is_group
@@ -639,7 +707,7 @@ impl DbManager {
     }
 
     pub fn get_offline_messages_summary(&self) -> Result<Vec<OfflineQueueSummary>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.reader()?;
         let mut stmt = conn.prepare(
             "SELECT recipient, COUNT(*) as msg_count, MIN(timestamp) as min_ts, MAX(timestamp) as max_ts
              FROM offline_messages
@@ -664,7 +732,7 @@ impl DbManager {
     }
 
     pub fn unlock_user_account(&self, username: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         let clean_username = clean_user(username);
         conn.execute(
             "UPDATE users SET auth_attempts = 0, locked_until = NULL WHERE LOWER(LTRIM(username, '@')) = ?1",
@@ -674,7 +742,7 @@ impl DbManager {
     }
 
     pub fn record_failed_auth(&self, username: &str) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         let clean_username = clean_user(username);
         let now_ts = chrono::Utc::now().timestamp();
 
@@ -706,7 +774,10 @@ impl DbManager {
     }
 
     pub fn is_user_locked(&self, username: &str) -> bool {
-        let conn = self.conn.lock().unwrap();
+        let conn = match self.reader() {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
         let clean_username = clean_user(username);
         let now_ts = chrono::Utc::now().timestamp();
         let count: i64 = conn.query_row(
@@ -718,7 +789,7 @@ impl DbManager {
     }
 
     pub fn purge_stale_offline_messages(&self, older_than_timestamp: i64) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         let deleted = conn.execute(
             "DELETE FROM offline_messages WHERE timestamp < ?1",
             params![older_than_timestamp],
@@ -729,7 +800,7 @@ impl DbManager {
 
     // ── IP Firewall Methods ──
     pub fn ban_ip(&self, ip: &str, reason: &str, banned_by: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         let now = chrono::Utc::now().timestamp();
         conn.execute(
             "INSERT OR REPLACE INTO ip_bans (ip, reason, banned_by, created_at) VALUES (?1, ?2, ?3, ?4)",
@@ -740,14 +811,14 @@ impl DbManager {
     }
 
     pub fn unban_ip(&self, ip: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         conn.execute("DELETE FROM ip_bans WHERE ip = ?1", params![ip.trim()])?;
         info!("[DB] Removed IP ban for '{}'", ip.trim());
         Ok(())
     }
 
     pub fn list_banned_ips(&self) -> Result<Vec<BannedIp>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.reader()?;
         let mut stmt = conn.prepare("SELECT ip, reason, banned_by, created_at FROM ip_bans ORDER BY created_at DESC")?;
         let rows = stmt.query_map([], |row| {
             Ok(BannedIp {
@@ -766,7 +837,7 @@ impl DbManager {
     }
 
     pub fn is_ip_banned(&self, ip: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.reader()?;
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM ip_bans WHERE ip = ?1",
             params![ip.trim()],
@@ -777,7 +848,7 @@ impl DbManager {
 
     // ── Audit Log Methods ──
     pub fn log_audit_action(&self, action: &str, target: &str, details: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         let now = chrono::Utc::now().timestamp();
         conn.execute(
             "INSERT INTO admin_audit_logs (action, target, details, timestamp) VALUES (?1, ?2, ?3, ?4)",
@@ -787,7 +858,7 @@ impl DbManager {
     }
 
     pub fn list_audit_logs(&self, limit: usize) -> Result<Vec<AuditLog>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.reader()?;
         let mut stmt = conn.prepare(
             "SELECT id, action, target, details, timestamp FROM admin_audit_logs ORDER BY timestamp DESC LIMIT ?1"
         )?;
@@ -810,7 +881,7 @@ impl DbManager {
 
     // ── Per-User Traffic Analytics Methods ──
     pub fn record_user_traffic_stat(&self, username: &str, bytes: u64) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         let clean_username = clean_user(username);
         let now = chrono::Utc::now().timestamp();
         conn.execute(
@@ -826,7 +897,7 @@ impl DbManager {
     }
 
     pub fn get_top_user_analytics(&self, limit: usize) -> Result<Vec<UserAnalytics>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.reader()?;
         let mut stmt = conn.prepare(
             "SELECT username, message_count, byte_count, last_active FROM user_traffic_stats ORDER BY byte_count DESC LIMIT ?1"
         )?;
@@ -848,20 +919,20 @@ impl DbManager {
 
     // ── Database Maintenance & Vacuum ──
     pub fn ping(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.reader()?;
         conn.query_row("SELECT 1", [], |_| Ok(()))?;
         Ok(())
     }
 
     pub fn vacuum_database(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.writer();
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")?;
         info!("[DB] Executed PRAGMA wal_checkpoint(TRUNCATE) and VACUUM on '{}'", self.db_path);
         Ok(())
     }
 
     pub fn get_db_health_fast(&self) -> Result<DbHealth> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.reader()?;
         let page_count: i64 = conn.query_row("PRAGMA page_count", [], |r| r.get(0)).unwrap_or(0);
         let page_size: i64 = conn.query_row("PRAGMA page_size", [], |r| r.get(0)).unwrap_or(0);
         let total_size_bytes = page_count * page_size;
@@ -879,7 +950,7 @@ impl DbManager {
     }
 
     pub fn get_db_health(&self) -> Result<DbHealth> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.reader()?;
         let page_count: i64 = conn.query_row("PRAGMA page_count", [], |r| r.get(0)).unwrap_or(0);
         let page_size: i64 = conn.query_row("PRAGMA page_size", [], |r| r.get(0)).unwrap_or(0);
         let total_size_bytes = page_count * page_size;
@@ -898,7 +969,7 @@ impl DbManager {
     }
 
     pub fn list_all_devices(&self) -> Result<Vec<UserDevice>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.reader()?;
         let mut stmt = conn.prepare(
             "SELECT id, username, hardware_hash, device_name, device_type, registered_at, last_active FROM user_devices ORDER BY last_active DESC"
         )?;
@@ -921,7 +992,7 @@ impl DbManager {
     }
 
     pub fn list_all_friend_requests(&self) -> Result<Vec<FriendRequest>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.reader()?;
         let mut stmt = conn.prepare(
             "SELECT id, sender, recipient, status, created_at FROM friend_requests"
         )?;
@@ -965,7 +1036,7 @@ impl DbManager {
     }
 
     pub fn import_migration_data(&self, data: &BridgeMigrationData) -> Result<MigrationImportStats> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.writer();
         let tx = conn.transaction()?;
 
         let mut imported_users = 0;
@@ -1281,6 +1352,62 @@ mod tests {
         let _ = std::fs::remove_file(&db_file_b);
         let _ = std::fs::remove_file(format!("{}-wal", path_b));
         let _ = std::fs::remove_file(format!("{}-shm", path_b));
+    }
+
+    #[test]
+    fn test_concurrent_readers_and_writer() {
+        let temp_dir = std::env::temp_dir();
+        let db_file = temp_dir.join(format!("test_concurrency_{}.db", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let db_path = db_file.to_str().unwrap();
+
+        let db = DbManager::new(db_path).expect("Failed to create test DB");
+
+        // Seed a user
+        db.save_or_update_user(&VextaUser {
+            username: "charlie".to_string(),
+            ed25519_pubkey: "charlie_key".to_string(),
+            created_at: 1725000000,
+            is_provisioned: false,
+            passcode: None,
+            registration_lock_hash: None,
+            encrypted_vault: None,
+            encrypted_friend_roster: None,
+            pre_key: None,
+            pre_key_signature: None,
+            auth_attempts: 0,
+            locked_until: None,
+        }).unwrap();
+
+        let mut handles = Vec::new();
+        // Spawn concurrent readers
+        for i in 0..5 {
+            let db_clone = db.clone();
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..20 {
+                    let user = db_clone.get_user("charlie").unwrap();
+                    assert!(user.is_some());
+                    assert_eq!(user.unwrap().ed25519_pubkey, "charlie_key");
+                }
+                i
+            }));
+        }
+
+        // Concurrently write
+        for j in 0..10 {
+            db.create_announcement(&format!("Announcement {}", j)).unwrap();
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let announcements = db.list_announcements().unwrap();
+        assert_eq!(announcements.len(), 10);
+
+        // Cleanup
+        let _ = std::fs::remove_file(&db_file);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path));
     }
 }
 

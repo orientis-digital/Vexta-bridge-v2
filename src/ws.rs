@@ -47,8 +47,8 @@ fn clean_user(u: &str) -> String {
 pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
     let (mut ws_sender, mut ws_receiver) = socket.split();
 
-    // Channel for pushing messages to this client session
-    let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
+    // Bounded channel for pushing messages to this client session with backpressure protection
+    let (tx, mut rx) = mpsc::channel::<Message>(crate::state::WS_CLIENT_CHANNEL_CAPACITY);
     let conn_id = state.next_conn_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     // Spawn forwarding task: rx -> ws_sender
@@ -76,7 +76,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
 
     // Send initial challenge frame in standard JSON format
     let text_json = serde_json::to_string(&challenge_frame).unwrap();
-    let _ = tx.send(Message::Text(text_json));
+    let _ = tx.send(Message::Text(text_json)).await;
 
     let mut authenticated_username: Option<String> = None;
 
@@ -140,9 +140,9 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                                     is_mandatory: true,
                                     message: message.clone(),
                                 };
-                                let _ = tx.send(Message::Text(serde_json::to_string(&update_frame).unwrap()));
+                                let _ = tx.send(Message::Text(serde_json::to_string(&update_frame).unwrap())).await;
                                 let resp = BridgeFrame::AuthError { reason: message };
-                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap())).await;
                                 break;
                             }
                             crate::state::VersionCheckResult::UpdateAvailable {
@@ -158,7 +158,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                                     download_url,
                                     message,
                                 };
-                                let _ = tx.send(Message::Text(serde_json::to_string(&update_frame).unwrap()));
+                                let _ = tx.send(Message::Text(serde_json::to_string(&update_frame).unwrap())).await;
                             }
                             crate::state::VersionCheckResult::Supported => {}
                         }
@@ -169,7 +169,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                             let resp = BridgeFrame::AuthError {
                                 reason: "Username already registered. Please authenticate via AUTH_RESPONSE.".into(),
                             };
-                            let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                            let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap())).await;
                             break;
                         }
 
@@ -202,7 +202,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                         let resp = BridgeFrame::AuthSuccess {
                             username: clean_username,
                         };
-                        let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                        let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap())).await;
                     }
 
                     BridgeFrame::AuthResponse {
@@ -237,9 +237,9 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                                     is_mandatory: true,
                                     message: message.clone(),
                                 };
-                                let _ = tx.send(Message::Text(serde_json::to_string(&update_frame).unwrap()));
+                                let _ = tx.send(Message::Text(serde_json::to_string(&update_frame).unwrap())).await;
                                 let resp = BridgeFrame::AuthError { reason: message };
-                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap())).await;
                                 break;
                             }
                             crate::state::VersionCheckResult::UpdateAvailable {
@@ -255,7 +255,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                                     download_url,
                                     message,
                                 };
-                                let _ = tx.send(Message::Text(serde_json::to_string(&update_frame).unwrap()));
+                                let _ = tx.send(Message::Text(serde_json::to_string(&update_frame).unwrap())).await;
                             }
                             crate::state::VersionCheckResult::Supported => {}
                         }
@@ -266,7 +266,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                             let resp = BridgeFrame::AuthError {
                                 reason: "Account is temporarily locked due to multiple failed authentication attempts.".into(),
                             };
-                            let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                            let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap())).await;
                             break;
                         }
 
@@ -316,7 +316,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                             let resp = BridgeFrame::AuthSuccess {
                                 username: clean_username.clone(),
                             };
-                            let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                            let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap())).await;
 
                             // Deliver Offline Messages
                             if let Ok(offline_msgs) = state.db.fetch_and_clear_offline_messages(&clean_username) {
@@ -330,7 +330,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                                         timestamp: o_msg.timestamp,
                                         is_group: o_msg.is_group,
                                     };
-                                    let _ = tx.send(Message::Text(serde_json::to_string(&frame).unwrap()));
+                                    let _ = tx.send(Message::Text(serde_json::to_string(&frame).unwrap())).await;
                                 }
                             }
                         } else {
@@ -339,7 +339,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                             let resp = BridgeFrame::AuthError {
                                 reason: format!("Signature or nonce verification failed (attempt #{}/5)", attempts),
                             };
-                            let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                            let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap())).await;
                             break;
                         }
                     }
@@ -349,7 +349,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                         let resp = BridgeFrame::Pong {
                             timestamp: timestamp.or_else(|| Some(chrono::Utc::now().timestamp_millis())),
                         };
-                        let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                        let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap())).await;
                     }
 
                     BridgeFrame::Pong { .. } => {
@@ -411,7 +411,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                                 let err = BridgeFrame::Error {
                                     message: "Cannot send friend request to yourself".to_string(),
                                 };
-                                let _ = tx.send(Message::Text(serde_json::to_string(&err).unwrap()));
+                                let _ = tx.send(Message::Text(serde_json::to_string(&err).unwrap())).await;
                             } else {
                                 match state.db.get_user(&clean_recipient) {
                                     Ok(Some(_)) => {
@@ -421,7 +421,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                                                 request_id: req_id,
                                                 recipient: clean_recipient.clone(),
                                             };
-                                            let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                                            let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap())).await;
 
                                             // Live push updated friend request list to recipient if online
                                             if let Ok(reqs) = state.db.list_pending_requests(&clean_recipient) {
@@ -434,7 +434,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                                             let err = BridgeFrame::Error {
                                                 message: format!("Failed to create friend request for '{}'", clean_recipient),
                                             };
-                                            let _ = tx.send(Message::Text(serde_json::to_string(&err).unwrap()));
+                                            let _ = tx.send(Message::Text(serde_json::to_string(&err).unwrap())).await;
                                         }
                                     }
                                     _ => {
@@ -442,7 +442,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                                         let err = BridgeFrame::Error {
                                             message: format!("User '{}' does not exist", clean_recipient),
                                         };
-                                        let _ = tx.send(Message::Text(serde_json::to_string(&err).unwrap()));
+                                        let _ = tx.send(Message::Text(serde_json::to_string(&err).unwrap())).await;
                                     }
                                 }
                             }
@@ -484,11 +484,11 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                             // Push updated state to the accepting user
                             if let Ok(friends) = state.db.list_friends(user) {
                                 let resp = BridgeFrame::FriendsList { friends };
-                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap())).await;
                             }
                             if let Ok(reqs) = state.db.list_pending_requests(user) {
                                 let push = BridgeFrame::FriendRequestsList { requests: reqs };
-                                let _ = tx.send(Message::Text(serde_json::to_string(&push).unwrap()));
+                                let _ = tx.send(Message::Text(serde_json::to_string(&push).unwrap())).await;
                             }
 
                             // Live push updated state to the requester if online
@@ -540,7 +540,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                             // Push updated state to the rejecting user
                             if let Ok(reqs) = state.db.list_pending_requests(user) {
                                 let push = BridgeFrame::FriendRequestsList { requests: reqs };
-                                let _ = tx.send(Message::Text(serde_json::to_string(&push).unwrap()));
+                                let _ = tx.send(Message::Text(serde_json::to_string(&push).unwrap())).await;
                             }
 
                             // Live push to other party if online
@@ -558,7 +558,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                             debug!("[WS ROSTER] Listing friends for user '@{}'", username);
                             if let Ok(friends) = state.db.list_friends(username) {
                                 let resp = BridgeFrame::FriendsList { friends };
-                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap())).await;
                             }
                         }
                     }
@@ -568,7 +568,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                             debug!("[WS ROSTER] Listing pending friend requests for user '@{}'", username);
                             if let Ok(requests) = state.db.list_pending_requests(username) {
                                 let resp = BridgeFrame::FriendRequestsList { requests };
-                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap())).await;
                             }
                         }
                     }
@@ -582,11 +582,11 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                             // Push updated state to the user who performed the removal
                             if let Ok(friends) = state.db.list_friends(username) {
                                 let resp = BridgeFrame::FriendsList { friends };
-                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap())).await;
                             }
                             if let Ok(reqs) = state.db.list_pending_requests(username) {
                                 let push = BridgeFrame::FriendRequestsList { requests: reqs };
-                                let _ = tx.send(Message::Text(serde_json::to_string(&push).unwrap()));
+                                let _ = tx.send(Message::Text(serde_json::to_string(&push).unwrap())).await;
                             }
 
                             // Live push updated state to the other side (the removed friend) if online
@@ -606,7 +606,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                             debug!("[WS DEVICE] Listing devices for user '@{}'", username);
                             if let Ok(devices) = state.db.list_devices(username) {
                                 let resp = BridgeFrame::DevicesList { devices };
-                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap())).await;
                             }
                         }
                     }
@@ -617,7 +617,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                             let _ = state.db.revoke_device(username, &hardware_hash);
                             if let Ok(devices) = state.db.list_devices(username) {
                                 let resp = BridgeFrame::DevicesList { devices };
-                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap())).await;
                             }
                         }
                     }
@@ -693,7 +693,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                                 let resp = BridgeFrame::FriendRosterResponse {
                                     encrypted_roster_blob: user.encrypted_friend_roster,
                                 };
-                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap())).await;
                             }
                         }
                     }
@@ -720,7 +720,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                                 let resp = BridgeFrame::VaultResponse {
                                     vault_data: user.encrypted_vault,
                                 };
-                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                                let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap())).await;
                             }
                         }
                     }
@@ -730,7 +730,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String
                             warn!("[WS AUTH] ACCOUNT PERMANENTLY DELETED by user '@{}'", username);
                             let _ = state.db.delete_user(username);
                             let resp = BridgeFrame::DeleteAccountSuccess;
-                            let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap()));
+                            let _ = tx.send(Message::Text(serde_json::to_string(&resp).unwrap())).await;
                             break;
                         }
                     }

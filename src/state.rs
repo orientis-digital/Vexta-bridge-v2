@@ -3,12 +3,13 @@ use crate::db::DbManager;
 use dashmap::DashMap;
 use axum::extract::ws::Message;
 use std::sync::Arc;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{Sender, error::TrySendError};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use tracing::{info, debug, warn};
 
-pub type Tx = UnboundedSender<Message>;
+pub const WS_CLIENT_CHANNEL_CAPACITY: usize = 256;
+pub type Tx = Sender<Message>;
 
 pub const SERVER_VERSION: &str = "v0.0.1";
 pub const SERVER_NAME: &str = "Vexta Bridge V2 - v0.0.1";
@@ -221,8 +222,16 @@ impl AppState {
         let mut delivered = false;
         if let Some(user_sessions) = self.active_sessions.get(recipient) {
             for tx in user_sessions.iter() {
-                if tx.send(msg.clone()).is_ok() {
-                    delivered = true;
+                match tx.try_send(msg.clone()) {
+                    Ok(_) => {
+                        delivered = true;
+                    }
+                    Err(TrySendError::Full(_)) => {
+                        warn!("[WS BACKPRESSURE] Outbound buffer full ({} msgs) for recipient '@{}'. Frame dropped to prevent memory exhaustion.", WS_CLIENT_CHANNEL_CAPACITY, recipient);
+                    }
+                    Err(TrySendError::Closed(_)) => {
+                        debug!("[WS] Session channel closed for recipient '@{}'", recipient);
+                    }
                 }
             }
         }
@@ -234,8 +243,16 @@ impl AppState {
         if let Some(user_sessions) = self.active_sessions.get(recipient) {
             for kv in user_sessions.iter() {
                 if *kv.key() != except_conn_id {
-                    if kv.value().send(msg.clone()).is_ok() {
-                        delivered = true;
+                    match kv.value().try_send(msg.clone()) {
+                        Ok(_) => {
+                            delivered = true;
+                        }
+                        Err(TrySendError::Full(_)) => {
+                            warn!("[WS BACKPRESSURE] Outbound buffer full ({} msgs) for recipient '@{}'. Frame dropped to prevent memory exhaustion.", WS_CLIENT_CHANNEL_CAPACITY, recipient);
+                        }
+                        Err(TrySendError::Closed(_)) => {
+                            debug!("[WS] Session channel closed for recipient '@{}'", recipient);
+                        }
                     }
                 }
             }
@@ -362,5 +379,18 @@ mod tests {
         assert!(v1 < v2);
         assert_eq!(v2, v3);
         assert!(v3 < v4);
+    }
+
+    #[test]
+    fn test_bounded_channel_backpressure() {
+        use axum::extract::ws::Message;
+        use tokio::sync::mpsc;
+
+        let (tx, _rx) = mpsc::channel::<Message>(2);
+        assert!(tx.try_send(Message::Text("first".into())).is_ok());
+        assert!(tx.try_send(Message::Text("second".into())).is_ok());
+        // Channel capacity is 2; 3rd item must fail non-blocking try_send
+        let err = tx.try_send(Message::Text("third".into()));
+        assert!(err.is_err());
     }
 }
