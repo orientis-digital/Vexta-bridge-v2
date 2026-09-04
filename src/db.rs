@@ -223,7 +223,13 @@ impl DbManager {
                 message_count INTEGER NOT NULL DEFAULT 0,
                 byte_count INTEGER NOT NULL DEFAULT 0,
                 last_active INTEGER NOT NULL
-            );",
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_offline_messages_recipient ON offline_messages(recipient);
+            CREATE INDEX IF NOT EXISTS idx_offline_messages_timestamp ON offline_messages(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_friend_requests_recipient ON friend_requests(recipient);
+            CREATE INDEX IF NOT EXISTS idx_friend_requests_sender ON friend_requests(sender);
+            CREATE INDEX IF NOT EXISTS idx_user_devices_username ON user_devices(username);",
         )?;
 
         // Column migration for existing db files
@@ -286,7 +292,7 @@ impl DbManager {
         let conn = self.reader()?;
         let clean_username = clean_user(username);
         let mut stmt = conn.prepare(
-            "SELECT username, ed25519_pubkey, created_at, is_provisioned, passcode, registration_lock_hash, encrypted_vault, encrypted_friend_roster, pre_key, pre_key_signature, auth_attempts, locked_until FROM users WHERE LOWER(LTRIM(username, '@')) = ?1",
+            "SELECT username, ed25519_pubkey, created_at, is_provisioned, passcode, registration_lock_hash, encrypted_vault, encrypted_friend_roster, pre_key, pre_key_signature, auth_attempts, locked_until FROM users WHERE username = ?1",
         )?;
 
         let mut rows = stmt.query(params![clean_username])?;
@@ -315,7 +321,7 @@ impl DbManager {
         let conn = self.writer();
         let clean_username = clean_user(username);
         conn.execute(
-            "UPDATE users SET encrypted_vault = ?1 WHERE LOWER(LTRIM(username, '@')) = ?2",
+            "UPDATE users SET encrypted_vault = ?1 WHERE username = ?2",
             params![vault_data, clean_username],
         )?;
         Ok(())
@@ -325,7 +331,7 @@ impl DbManager {
         let conn = self.writer();
         let clean_username = clean_user(username);
         conn.execute(
-            "UPDATE users SET encrypted_friend_roster = ?1 WHERE LOWER(LTRIM(username, '@')) = ?2",
+            "UPDATE users SET encrypted_friend_roster = ?1 WHERE username = ?2",
             params![roster_data, clean_username],
         )?;
         Ok(())
@@ -335,7 +341,7 @@ impl DbManager {
         let conn = self.writer();
         let clean_username = clean_user(username);
         conn.execute(
-            "UPDATE users SET registration_lock_hash = ?1 WHERE LOWER(LTRIM(username, '@')) = ?2",
+            "UPDATE users SET registration_lock_hash = ?1 WHERE username = ?2",
             params![lock_hash, clean_username],
         )?;
         Ok(())
@@ -345,7 +351,7 @@ impl DbManager {
         let conn = self.writer();
         let clean_username = clean_user(username);
         conn.execute(
-            "UPDATE users SET ed25519_pubkey = ?1 WHERE LOWER(LTRIM(username, '@')) = ?2",
+            "UPDATE users SET ed25519_pubkey = ?1 WHERE username = ?2",
             params![new_pubkey, clean_username],
         )?;
         Ok(())
@@ -354,7 +360,7 @@ impl DbManager {
     pub fn delete_user(&self, username: &str) -> Result<()> {
         let conn = self.writer();
         let clean_username = clean_user(username);
-        conn.execute("DELETE FROM users WHERE LOWER(LTRIM(username, '@')) = ?1", params![clean_username])?;
+        conn.execute("DELETE FROM users WHERE username = ?1", params![clean_username])?;
         Ok(())
     }
 
@@ -489,8 +495,8 @@ impl DbManager {
         let clean_other = clean_user(other_user);
         conn.execute(
             "UPDATE friend_requests SET status = ?1 
-             WHERE ((LOWER(LTRIM(sender, '@')) = ?2 AND LOWER(LTRIM(recipient, '@')) = ?3) OR 
-                    (LOWER(LTRIM(sender, '@')) = ?3 AND LOWER(LTRIM(recipient, '@')) = ?2))",
+             WHERE ((sender = ?2 AND recipient = ?3) OR 
+                    (sender = ?3 AND recipient = ?2))",
             params![status, clean_u, clean_other],
         )?;
         Ok(())
@@ -500,9 +506,9 @@ impl DbManager {
         let conn = self.reader()?;
         let clean_username = clean_user(username);
         let mut stmt = conn.prepare(
-            "SELECT CASE WHEN LOWER(LTRIM(sender, '@')) = ?1 THEN recipient ELSE sender END AS friend
+            "SELECT CASE WHEN sender = ?1 THEN recipient ELSE sender END AS friend
              FROM friend_requests
-             WHERE (LOWER(LTRIM(sender, '@')) = ?1 OR LOWER(LTRIM(recipient, '@')) = ?1) AND status = 'accepted'",
+             WHERE (sender = ?1 OR recipient = ?1) AND status = 'accepted'",
         )?;
 
         let rows = stmt.query_map(params![clean_username], |row| row.get(0))?;
@@ -519,7 +525,7 @@ impl DbManager {
         let mut stmt = conn.prepare(
             "SELECT id, sender, recipient, status, created_at
              FROM friend_requests 
-             WHERE (LOWER(LTRIM(recipient, '@')) = ?1 OR LOWER(LTRIM(sender, '@')) = ?1) AND status = 'pending'",
+             WHERE (recipient = ?1 OR sender = ?1) AND status = 'pending'",
         )?;
 
         let rows = stmt.query_map(params![clean_username], |row| {
@@ -570,8 +576,8 @@ impl DbManager {
         let clean_b = clean_user(user_b);
         let result = conn.query_row(
             "SELECT sender FROM friend_requests
-             WHERE ((LOWER(LTRIM(sender, '@')) = ?1 AND LOWER(LTRIM(recipient, '@')) = ?2) OR 
-                    (LOWER(LTRIM(sender, '@')) = ?2 AND LOWER(LTRIM(recipient, '@')) = ?1))
+             WHERE ((sender = ?1 AND recipient = ?2) OR 
+                    (sender = ?2 AND recipient = ?1))
              AND status = 'pending'",
             params![clean_a, clean_b],
             |row| row.get::<_, String>(0),
@@ -589,8 +595,8 @@ impl DbManager {
         let clean_friend = clean_user(friend_username);
         conn.execute(
             "DELETE FROM friend_requests
-             WHERE ((LOWER(LTRIM(sender, '@')) = ?1 AND LOWER(LTRIM(recipient, '@')) = ?2) OR 
-                    (LOWER(LTRIM(sender, '@')) = ?2 AND LOWER(LTRIM(recipient, '@')) = ?1))",
+             WHERE ((sender = ?1 AND recipient = ?2) OR 
+                    (sender = ?2 AND recipient = ?1))",
             params![clean_username, clean_friend],
         )?;
         Ok(())
@@ -621,7 +627,7 @@ impl DbManager {
         let clean_username = clean_user(username);
         let mut stmt = conn.prepare(
             "SELECT id, username, hardware_hash, device_name, device_type, registered_at, last_active
-             FROM user_devices WHERE LOWER(LTRIM(username, '@')) = ?1",
+             FROM user_devices WHERE username = ?1",
         )?;
 
         let rows = stmt.query_map(params![clean_username], |row| {
@@ -647,7 +653,7 @@ impl DbManager {
         let conn = self.writer();
         let clean_username = clean_user(username);
         conn.execute(
-            "DELETE FROM user_devices WHERE LOWER(LTRIM(username, '@')) = ?1 AND hardware_hash = ?2",
+            "DELETE FROM user_devices WHERE username = ?1 AND hardware_hash = ?2",
             params![clean_username, hardware_hash],
         )?;
         Ok(())
@@ -678,7 +684,7 @@ impl DbManager {
         let clean_recipient = clean_user(recipient);
         let mut stmt = conn.prepare(
             "SELECT id, recipient, ciphertext, timestamp, is_group
-             FROM offline_messages WHERE LOWER(LTRIM(recipient, '@')) = ?1 ORDER BY timestamp ASC",
+             FROM offline_messages WHERE recipient = ?1 ORDER BY timestamp ASC",
         )?;
 
         let rows = stmt.query_map(params![clean_recipient], |row| {
@@ -698,7 +704,7 @@ impl DbManager {
         }
 
         conn.execute(
-            "DELETE FROM offline_messages WHERE LOWER(LTRIM(recipient, '@')) = ?1",
+            "DELETE FROM offline_messages WHERE recipient = ?1",
             params![clean_recipient],
         )?;
 
@@ -735,7 +741,7 @@ impl DbManager {
         let conn = self.writer();
         let clean_username = clean_user(username);
         conn.execute(
-            "UPDATE users SET auth_attempts = 0, locked_until = NULL WHERE LOWER(LTRIM(username, '@')) = ?1",
+            "UPDATE users SET auth_attempts = 0, locked_until = NULL WHERE username = ?1",
             params![clean_username],
         )?;
         Ok(())
@@ -747,7 +753,7 @@ impl DbManager {
         let now_ts = chrono::Utc::now().timestamp();
 
         let attempts: i64 = conn.query_row(
-            "SELECT auth_attempts FROM users WHERE LOWER(LTRIM(username, '@')) = ?1",
+            "SELECT auth_attempts FROM users WHERE username = ?1",
             params![clean_username],
             |r| r.get(0),
         ).unwrap_or(0) + 1;
@@ -760,7 +766,7 @@ impl DbManager {
         };
 
         conn.execute(
-            "UPDATE users SET auth_attempts = ?1, locked_until = COALESCE(?2, locked_until) WHERE LOWER(LTRIM(username, '@')) = ?3",
+            "UPDATE users SET auth_attempts = ?1, locked_until = COALESCE(?2, locked_until) WHERE username = ?3",
             params![attempts, locked_until, clean_username],
         )?;
 
@@ -781,7 +787,7 @@ impl DbManager {
         let clean_username = clean_user(username);
         let now_ts = chrono::Utc::now().timestamp();
         let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM users WHERE LOWER(LTRIM(username, '@')) = ?1 AND (locked_until > ?2 OR auth_attempts >= 5)",
+            "SELECT COUNT(*) FROM users WHERE username = ?1 AND (locked_until > ?2 OR auth_attempts >= 5)",
             params![clean_username, now_ts],
             |r| r.get(0),
         ).unwrap_or(0);
